@@ -1,26 +1,99 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Mission-ops palette: warm amber instrumentation over Martian dark. */
+  --color-panel: rgba(16, 10, 8, 0.74);
+  --color-edge: rgba(226, 148, 92, 0.2);
+  --color-edge-strong: rgba(240, 160, 96, 0.42);
+  --color-ink: #f0d4b4;
+  --color-ink-dim: #a87d5e;
+  --color-ink-faint: #6d5241;
+  --color-amber: #ff9d4d;
+  --color-signal: #6fd6b0;
+  --color-warn: #ff6b4a;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+  margin: 0;
+  background: #0b0705;
+  color: var(--color-ink);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  overscroll-behavior: none;
+}
+
+/* Keep the canvas from stealing text selection while driving. */
+canvas {
+  display: block;
+  touch-action: none;
+}
+
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+}
+
+.label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+.value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--color-ink);
+}
+
+.value-lg {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+
+/* Range inputs, restyled to match the instrumentation. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--color-edge-strong);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 14px;
+  margin-top: -6px;
+  background: var(--color-amber);
+  border: none;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--color-edge-strong);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 14px;
+  border: none;
+  border-radius: 0;
+  background: var(--color-amber);
 }

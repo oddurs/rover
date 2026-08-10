@@ -1,0 +1,24 @@
+{
+  "source": "MGS MOLA MEGDR meg128 / MEGT00N090HB.IMG (NASA PDS Geosciences Node)",
+  "note": "Elevation in metres relative to the Mars areoid (GMM3).",
+  "size": 897,
+  "format": "uint16-le",
+  "elevationMin": -4648.0,
+  "elevationMax": 2002.0,
+  "metresPerPixelLat": 463.05766716974557,
+  "metresPerPixelLon": 461.0008178752798,
+  "bounds": {
+    "north": -1.8984375,
+    "south": -8.90625,
+    "west": 134.296875,
+    "east": 141.3046875
+  },
+  "origin": {
+    "name": "Bradbury Landing",
+    "lat": -4.5895,
+    "lon": 137.4417,
+    "pixelRow": 344.456,
+    "pixelCol": 402.53759999999966,
+    "elevation": -4509.0
+  }
+}

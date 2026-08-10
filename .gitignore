@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local tooling for the terrain pipeline
+/.venv-tools
+# Raw MOLA band fetched by tools/extract_mola.py (regenerate, don't commit)
+/.data

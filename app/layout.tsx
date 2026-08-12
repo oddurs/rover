@@ -22,7 +22,12 @@ export const viewport: Viewport = {
   themeColor: "#0b0705",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+/**
+ * Props are declared explicitly rather than using Next's generated
+ * `LayoutProps`, which only exists once a build has written .next/types — so
+ * relying on it makes `tsc --noEmit` fail on a fresh clone, and in CI.
+ */
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"

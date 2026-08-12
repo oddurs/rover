@@ -5,8 +5,15 @@ import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 
 import { FlightModel } from "@/components/FlightModel";
-import { MARS } from "@/lib/mars";
-import { mast, mounts } from "@/lib/mounts";
+import {
+  type DriveContext,
+  type DriveInput,
+  createDriveState,
+  resetDrive,
+  stepArcade,
+  stepSim,
+} from "@/lib/drive";
+import { MAST_LIMITS, MAST_SLEW_RATE, mast, mounts } from "@/lib/mounts";
 import { initialYaw } from "@/lib/params";
 import {
   CORNER_ARM,
@@ -26,6 +33,8 @@ import {
   strut,
 } from "@/lib/roverGeometry";
 import { telemetry, useUi } from "@/lib/store";
+import { sampleHeight } from "@/lib/terrain";
+import { VEHICLES } from "@/lib/vehicles";
 import { shared } from "@/lib/uniforms";
 
 /**
@@ -59,13 +68,14 @@ const REAR_REL: [number, number, number] = [
 
 /** Tightest turn the corner actuators allow, metres. */
 const MIN_TURN_RADIUS = 3.0;
-const TURN_IN_PLACE_RATE = 0.42; // rad/s at the default speed multiplier
-const ACCEL = 2.4; // m/s^2 in sim-time — a two-tonne vehicle, not a go-kart
 /** Weight transfer, radians per m/s^2. Small: the suspension is very stiff. */
 const PITCH_PER_G = 0.016;
 const ROLL_PER_G = 0.010;
 /** How quickly the body settles after a change in load. */
 const BODY_TAU = 0.16;
+/** Baseline for measuring crest curvature, metres. Matches lib/drive.ts. */
+const LAUNCH_PROBE = 2.6;
+
 /** Keep the rover where float32 world coordinates stay sub-centimetre. */
 const ROAM_LIMIT = 15000;
 
@@ -76,6 +86,7 @@ interface Keys {
   right: boolean;
   brake: boolean;
   boost: boolean;
+  drift: boolean;
 }
 
 const KEY_MAP: Record<string, keyof Keys> = {
@@ -90,9 +101,10 @@ const KEY_MAP: Record<string, keyof Keys> = {
   Space: "brake",
   ShiftLeft: "boost",
   ShiftRight: "boost",
+  KeyX: "drift",
 };
 
-function useKeys() {
+function useKeys(edgeRef: React.RefObject<{ jump: boolean }>) {
   const keys = useRef<Keys>({
     fwd: false,
     back: false,
@@ -100,13 +112,18 @@ function useKeys() {
     right: false,
     brake: false,
     boost: false,
+    drift: false,
   });
 
   useEffect(() => {
     const set = (e: KeyboardEvent, v: boolean) => {
       const k = KEY_MAP[e.code];
       if (!k) return;
-      if (e.code === "Space") e.preventDefault();
+      if (e.code === "Space") {
+        e.preventDefault();
+        // Latch the press so a quick tap survives even a slow frame.
+        if (v && !keys.current.brake) edgeRef.current.jump = true;
+      }
       keys.current[k] = v;
     };
     const down = (e: KeyboardEvent) => set(e, true);
@@ -117,7 +134,9 @@ function useKeys() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, []);
+    // edgeRef is a ref: stable for the life of the component, and re-binding
+    // the listeners on it would drop key state mid-press.
+  }, [edgeRef]);
 
   return keys;
 }
@@ -273,17 +292,17 @@ export function Rover() {
     ];
   }, []);
 
+  const landEuler = useMemo(() => new THREE.Euler(0, 0, 0, "YXZ"), []);
+  const landQuat = useMemo(() => new THREE.Quaternion(), []);
   const root = useRef<THREE.Group>(null);
   const joints = useRef<Map<string, THREE.Object3D>>(new Map());
-  const keys = useKeys();
+  const edge = useRef({ jump: false });
+  const keys = useKeys(edge);
   const modelKind = useUi((s) => s.modelKind);
 
   const drive = useRef({
-    x: 0,
-    z: 0,
-    yaw: initialYaw(),
-    speed: 0,
-    prevSpeed: 0,
+    ...createDriveState(initialYaw()),
+    /** Commanded steering, -1..1, before the actuators get to it. */
     steer: 0,
     /** Actual corner angles: [frontL, frontR, rearL, rearR]. */
     corners: [0, 0, 0, 0],
@@ -291,10 +310,23 @@ export function Rover() {
     spin: [0, 0, 0, 0, 0, 0],
     pitchBias: 0,
     rollBias: 0,
-    odometer: 0,
+    prevSpeed: 0,
     prevRockerL: 0,
     prevRockerR: 0,
+    prevPitch: 0,
+    prevRoll: 0,
+    pitchRateNow: 0,
+    rollRateNow: 0,
+    prevPoseY: 0,
+    groundVy: 0,
+    groundAccelY: 0,
+    pitchAccelNow: 0,
+    rollAccelNow: 0,
+    prevMode: "" as string,
+    seenReset: 0,
     rescan: 0,
+    /** Last measured grade, fed back into the slip model. */
+    grade: 0,
   });
 
   // Resolve the articulating groups by name. Re-run periodically as well as
@@ -329,61 +361,111 @@ export function Rover() {
     const d = drive.current;
     const k = keys.current;
     const j = joints.current;
-    const { speedScale } = useUi.getState();
-
     d.rescan = (d.rescan + 1) % 15;
     if (d.rescan === 0) rescan();
 
-    const throttle = (k.fwd ? 1 : 0) - (k.back ? 1 : 0);
-    const steerIn = (k.left ? 1 : 0) - (k.right ? 1 : 0);
+    const ui = useUi.getState();
+    const arcade = ui.mode === "arcade";
 
-    const topSpeed = MARS.roverTopSpeed * speedScale * (k.boost ? 2.5 : 1);
-    const accel = ACCEL * (k.boost ? 2 : 1);
-    d.speed += THREE.MathUtils.clamp(throttle * topSpeed - d.speed, -accel * dt, accel * dt);
-    if (k.brake) d.speed *= Math.pow(0.015, dt);
+    const input: DriveInput = {
+      throttle: (k.fwd ? 1 : 0) - (k.back ? 1 : 0),
+      steer: (k.left ? 1 : 0) - (k.right ? 1 : 0),
+      // Space brakes a rover and launches an arcade machine.
+      brake: !arcade && k.brake,
+      jump: arcade && k.brake,
+      jumpPressed: arcade && edge.current.jump,
+      boost: k.boost,
+      drift: arcade && k.drift,
+      reset: false,
+    };
 
-    // With no throttle, steering input spins the rover about its own centre —
-    // the manoeuvre four independently steered corners exist to make possible.
-    const turningInPlace = throttle === 0 && steerIn !== 0 && Math.abs(d.speed) < 0.35;
+    // Switching models must not carry speed across. Arcade cruises at 15 m/s;
+    // handing that to the simulation, which then multiplies by the time
+    // compression, launches the rover across the crater.
+    if (d.prevMode && d.prevMode !== ui.mode) resetDrive(d);
+    d.prevMode = ui.mode;
 
-    // What the corners are being *asked* for.
-    let target: [number, number, number, number];
-    if (turningInPlace) {
-      d.speed *= Math.pow(0.02, dt);
-      target = steerTurnInPlace().corners;
-    } else {
-      d.steer += THREE.MathUtils.clamp(steerIn - d.steer, -2.6 * dt, 2.6 * dt);
-      // Tighten the achievable radius off at speed, the way any real vehicle
-      // has to. Full lock is only available when crawling.
-      const speedFrac = Math.min(1, Math.abs(d.speed) / Math.max(topSpeed, 0.001));
-      target = steerFor((d.steer / MIN_TURN_RADIUS) * (1 - 0.45 * speedFrac)).corners;
+    if (ui.resetNonce !== d.seenReset) {
+      d.seenReset = ui.resetNonce;
+      input.reset = true;
     }
 
-    // Slew the actuators toward it. Everything downstream uses where the
-    // wheels have actually got to, not where they were told to go.
+    // Where the corners are being asked to point.
+    const turningInPlace =
+      !arcade && input.throttle === 0 && input.steer !== 0 && Math.abs(d.vFwd) < 0.004;
+
+    let target: [number, number, number, number];
+    if (turningInPlace) {
+      target = steerTurnInPlace().corners;
+    } else if (arcade) {
+      d.steer += THREE.MathUtils.clamp(input.steer - d.steer, -6 * dt, 6 * dt);
+      target = steerFor(d.steer / MIN_TURN_RADIUS).corners;
+    } else {
+      d.steer += THREE.MathUtils.clamp(input.steer - d.steer, -2.6 * dt, 2.6 * dt);
+      target = steerFor(d.steer / MIN_TURN_RADIUS).corners;
+    }
+
+    // Slew the actuators. Everything downstream uses where the wheels have
+    // actually got to, not where they were told to go.
+    const slew = (arcade ? 6 : 1) * CORNER_SLEW_RATE;
     let misalign = 0;
     for (let i = 0; i < 4; i++) {
-      const step = THREE.MathUtils.clamp(
-        target[i] - d.corners[i],
-        -CORNER_SLEW_RATE * dt,
-        CORNER_SLEW_RATE * dt
-      );
+      const step = THREE.MathUtils.clamp(target[i] - d.corners[i], -slew * dt, slew * dt);
       d.corners[i] += step;
       misalign = Math.max(misalign, Math.abs(target[i] - d.corners[i]));
     }
     const corners = d.corners as [number, number, number, number];
-    // Wheels still slewing can't put much force into the ground yet.
     const aligned = THREE.MathUtils.clamp(1 - misalign / 0.4, 0, 1);
 
-    let yawRate: number;
-    if (turningInPlace) {
-      yawRate = steerIn * TURN_IN_PLACE_RATE * (speedScale / 120) * aligned;
-    } else {
-      // Recover the curvature the front pair is genuinely set up for, so the
-      // hull only starts to come round once the wheels have.
-      yawRate = (d.speed * Math.tan((corners[0] + corners[1]) / 2)) / CORNER_ARM;
+    // Curvature of the ground along the heading, measured over a
+    // suspension-scale baseline: the linkage swallows anything shorter than
+    // the vehicle, so the body follows a low-passed version of the terrain.
+    const fx = -Math.sin(d.yaw);
+    const fz = -Math.cos(d.yaw);
+    const P = LAUNCH_PROBE;
+    const hHere = sampleHeight(d.x, d.z);
+    const hAhead = sampleHeight(d.x + fx * P, d.z + fz * P);
+    const hBehind = sampleHeight(d.x - fx * P, d.z - fz * P);
+    // Positive over a crest.
+    const convexity = -(hBehind - 2 * hHere + hAhead) / (P * P);
+    const riseRate = (hHere - hBehind) / P;
+
+    const ctx: DriveContext = {
+      gradeDeg: d.grade,
+      convexity,
+      riseRate,
+      timeCompression: ui.timeCompression,
+      frontAngle: (corners[0] + corners[1]) / 2,
+      cornerArm: CORNER_ARM,
+      turningInPlace,
+      aligned,
+      pitch: d.prevPitch,
+      roll: d.prevRoll,
+      pitchRate: d.pitchRateNow,
+      rollRate: d.rollRateNow,
+      groundAccelY: d.groundAccelY,
+      pitchAccel: d.pitchAccelNow,
+      rollAccel: d.rollAccelNow,
+    };
+
+    edge.current.jump = false;
+
+    // Inspection hook: the drive state and the live input, for probing.
+    const dbg = (window as unknown as { rover?: Record<string, unknown> }).rover;
+    if (dbg) {
+      dbg.drive = d;
+      dbg.input = input;
+      dbg.mast = mast;
     }
-    d.yaw += yawRate * dt;
+
+    if (arcade) stepArcade(d, input, dt, ctx);
+    else stepSim(d, input, dt, ctx);
+
+    const yawRate = d.yawRate;
+
+    // Keep inside the region where float32 world coordinates stay precise.
+    d.x = THREE.MathUtils.clamp(d.x, -ROAM_LIMIT, ROAM_LIMIT);
+    d.z = THREE.MathUtils.clamp(d.z, -ROAM_LIMIT, ROAM_LIMIT);
 
     // Per-wheel rolling, from each wheel's own ground velocity.
     //
@@ -394,29 +476,42 @@ export function Rover() {
     //
     // The sign is negative because rotating a wheel group by +X carries its
     // contact patch toward -Z, and rolling forward needs it going the other way.
+    // Wheels turn at the *commanded* rate even when the ground refuses to
+    // cooperate, which is what makes slip and drift visible from outside.
     const steerPerWheel = [corners[0], 0, corners[2], corners[1], 0, corners[3]];
+    const spinDt = arcade ? dt : dt * ui.timeCompression;
     for (let i = 0; i < 6; i++) {
       const [wx, wz] = WHEEL_STATIONS[i];
       const vx = yawRate * wz;
-      const vz = -d.speed - yawRate * wx;
+      const vz = -d.wheelSpeed - yawRate * wx;
       const delta = steerPerWheel[i];
       const rolling = -Math.sin(delta) * vx - Math.cos(delta) * vz;
-      d.spin[i] -= (rolling / GEO.wheelRadius) * dt;
+      d.spin[i] -= (rolling / GEO.wheelRadius) * spinDt;
     }
 
-    d.x = THREE.MathUtils.clamp(
-      d.x - Math.sin(d.yaw) * d.speed * dt,
-      -ROAM_LIMIT,
-      ROAM_LIMIT
-    );
-    d.z = THREE.MathUtils.clamp(
-      d.z - Math.cos(d.yaw) * d.speed * dt,
-      -ROAM_LIMIT,
-      ROAM_LIMIT
-    );
-    d.odometer += Math.abs(d.speed) * dt;
+    const pose = solvePose(d.x, d.z, d.yaw, modelKind !== "engineering");
+    d.grade = pose.gradeDeg;
+    // How fast the terrain is currently rotating the hull. A rover that drives
+    // off a crest keeps rotating the way the crest was rotating it.
+    if (dt > 1e-6) {
+      const pr = (pose.pitch - d.prevPitch) / dt;
+      const rr = (pose.roll - d.prevRoll) / dt;
+      d.pitchAccelNow = (pr - d.pitchRateNow) / dt;
+      d.rollAccelNow = (rr - d.rollRateNow) / dt;
+      d.pitchRateNow = pr;
+      d.rollRateNow = rr;
 
-    const pose = solvePose(d.x, d.z, d.yaw, modelKind === "flight");
+      // How hard the ground is throwing the hull up or dropping it away.
+      // Lightly smoothed: a raw second difference of a noisy surface at a
+      // variable frame rate is all spikes.
+      const vy = (pose.position[1] - d.prevPoseY) / dt;
+      const smoothed = d.groundVy + (vy - d.groundVy) * 0.35;
+      d.groundAccelY = (smoothed - d.groundVy) / dt;
+      d.groundVy = smoothed;
+    }
+    d.prevPitch = pose.pitch;
+    d.prevRoll = pose.roll;
+    d.prevPoseY = pose.position[1];
 
     // Weight transfer. Accelerating lifts the nose, braking drops it, and a
     // turn leans the body outward. Tiny — the linkage is stiff and the vehicle
@@ -424,23 +519,47 @@ export function Rover() {
     // rather than driving.
     // Guard the divide: R3F can hand us a zero delta, and a single NaN here
     // poisons the bias permanently, which takes the whole chassis matrix with it.
-    const along = dt > 1e-6 ? (d.speed - d.prevSpeed) / dt : 0;
-    d.prevSpeed = d.speed;
+    const along = dt > 1e-6 ? (d.vFwd - d.prevSpeed) / dt : 0;
+    d.prevSpeed = d.vFwd;
     const settle = 1 - Math.exp(-dt / BODY_TAU);
     d.pitchBias +=
       (THREE.MathUtils.clamp(along * PITCH_PER_G, -0.05, 0.05) - d.pitchBias) * settle;
     d.rollBias +=
-      (THREE.MathUtils.clamp(-d.speed * yawRate * ROLL_PER_G, -0.05, 0.05) - d.rollBias) *
+      (THREE.MathUtils.clamp(-d.vFwd * yawRate * ROLL_PER_G, -0.05, 0.05) - d.rollBias) *
       settle;
 
+    // In flight or on its back the body carries its own orientation; on the
+    // wheels the terrain decides it. Just after touchdown it is easing from
+    // one to the other, and during that hand-over the whole attitude lives on
+    // the root so the two can be interpolated as a single rotation.
+    const freeBody = d.airborne || d.crashed;
+    const settling = !freeBody && d.landBlend > 0;
+
+    // What the ground is asking for, spring included.
+    const gPitch = pose.pitch + d.pitchBias + d.suspPitch;
+    const gRoll = pose.roll + d.rollBias + d.suspRoll;
+
     if (root.current) {
-      root.current.position.set(pose.position[0], pose.position[1], pose.position[2]);
-      root.current.rotation.y = d.yaw;
+      root.current.position.set(
+        pose.position[0],
+        pose.position[1] + d.airY - d.compress - d.suspY + (d.crashed ? 0.3 : 0),
+        pose.position[2]
+      );
+      if (freeBody) {
+        root.current.quaternion.copy(d.quat);
+      } else if (settling) {
+        landEuler.set(gPitch, d.yaw, gRoll, "YXZ");
+        landQuat.setFromEuler(landEuler);
+        root.current.quaternion.copy(landQuat).slerp(d.landQuat, d.landBlend);
+      } else {
+        root.current.rotation.set(0, d.yaw, 0);
+      }
     }
     const chassis = j.get("chassis");
     if (chassis) {
-      chassis.rotation.x = pose.pitch + d.pitchBias;
-      chassis.rotation.z = pose.roll + d.rollBias;
+      // Zero while the root owns the full attitude, or it would be applied twice.
+      chassis.rotation.x = freeBody || settling ? 0 : gPitch;
+      chassis.rotation.z = freeBody || settling ? 0 : gRoll;
     }
 
     // Linkage angles are absolute; each joint renders relative to its parent,
@@ -469,6 +588,24 @@ export function Rover() {
       if (o) o.rotation.y = corners[i];
     }
 
+    // Slew toward a commanded target, if one has been set by clicking.
+    if (mast.slewing) {
+      const dp = THREE.MathUtils.clamp(
+        mast.targetPan - mast.pan, -MAST_SLEW_RATE * dt, MAST_SLEW_RATE * dt
+      );
+      const dtl = THREE.MathUtils.clamp(
+        mast.targetTilt - mast.tilt, -MAST_SLEW_RATE * dt, MAST_SLEW_RATE * dt
+      );
+      mast.pan += dp;
+      mast.tilt = THREE.MathUtils.clamp(
+        mast.tilt + dtl, MAST_LIMITS.tiltMin, MAST_LIMITS.tiltMax
+      );
+      if (Math.abs(mast.targetPan - mast.pan) < 1e-3 &&
+          Math.abs(mast.targetTilt - mast.tilt) < 1e-3) {
+        mast.slewing = false;
+      }
+    }
+
     // The mast is what actually aims; the camera just rides on the head.
     const head = j.get("mastHead");
     if (head) head.rotation.set(mast.tilt, mast.pan, 0, "YXZ");
@@ -489,15 +626,27 @@ export function Rover() {
     telemetry.pitch = pose.pitch;
     telemetry.roll = pose.roll;
     telemetry.grade = pose.gradeDeg;
-    telemetry.speed = d.speed;
+    telemetry.speed = d.vFwd;
     telemetry.odometer = d.odometer;
+    telemetry.trueOdometer = d.trueOdometer;
+    telemetry.slip = d.slip;
+    telemetry.battery = d.battery;
+    telemetry.airborne = d.airborne;
+    telemetry.airY = d.airY;
+    telemetry.airtime = d.airtime;
+    telemetry.drifting = d.drifting;
+    telemetry.crashed = d.crashed;
+    telemetry.crouching = d.crouching;
+    telemetry.lateral = d.vLat;
     telemetry.rockerLeft = pose.left.rockerAngle;
     telemetry.rockerRight = pose.right.rockerAngle;
     telemetry.bogieLeft = pose.left.bogieAngle;
     telemetry.bogieRight = pose.right.bogieAngle;
     for (let i = 0; i < 6; i++) {
       telemetry.currents[i] = wheelCurrent(
-        d.speed,
+        // The current model is scaled for a rover doing centimetres a second;
+        // arcade speeds would peg every bar.
+        arcade ? d.vFwd * 0.02 : d.vFwd,
         pose.gradeDeg,
         i < 3 ? artL : artR,
         d.odometer + i * 3.1
@@ -508,9 +657,9 @@ export function Rover() {
   return (
     <group ref={root}>
       <group name="chassis">
-        {modelKind === "flight" ? (
+        {modelKind !== "engineering" ? (
           <Suspense fallback={null}>
-            <FlightModel />
+            <FlightModel vehicle={VEHICLES[modelKind]} />
           </Suspense>
         ) : (
           <>

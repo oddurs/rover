@@ -1,0 +1,55 @@
+Third-party material redistributed in this repository
+=====================================================
+
+This project is not affiliated with, endorsed by, or sponsored by NASA or the
+Jet Propulsion Laboratory. NASA material is used here under NASA's media usage
+guidelines, which permit reuse of most NASA content but do not permit any
+implication of NASA endorsement.
+
+  https://www.nasa.gov/nasa-brand-center/images-and-media/
+
+
+public/terrain/gale-mola.bin
+public/terrain/gale-mola.json
+----------------------------
+  A 415 km window of elevation around Bradbury Landing, derived from:
+
+    Mars Global Surveyor MOLA Mission Experiment Gridded Data Record
+    MGS-M-MOLA-5-MEGDR-L3-V1.0, tile MEGT00N090HB
+    Smith, D. E. et al., NASA Planetary Data System, Geosciences Node
+
+  A work of the United States Government, not subject to copyright.
+  Regenerate with tools/extract_mola.py — see docs/DATA.md.
+
+
+public/terrain/msl-traverse.json
+--------------------------------
+  Curiosity's localised positions, sol 3 to sol 4977, derived from:
+
+    MSL_waypoints.json, NASA/JPL-Caltech MMGIS
+    https://mars.nasa.gov/mmgis-maps/MSL/Layers/json/MSL_waypoints.json
+
+  Credit: NASA/JPL-Caltech.
+  Regenerate with tools/extract_traverse.py.
+
+
+public/models/curiosity.glb
+---------------------------
+  Credit: NASA/JPL-Caltech.
+  Source: https://science.nasa.gov/resource/curiosity-rover-3d-model/
+  Recompressed for the web (WebP textures, meshopt geometry); geometry is
+  otherwise unaltered. 11.86 MB -> 1.06 MB.
+
+
+public/models/perseverance.glb
+------------------------------
+  Credit: NASA/JPL-Caltech.
+  Source: https://science.nasa.gov/resource/mars-perseverance-rover-3d-model/
+  Recompressed the same way. 11.69 MB -> 2.7 MB.
+
+
+Reference imagery used during development
+-----------------------------------------
+  The terrain's colour palette was measured from PIA25175 (NASA/JPL-Caltech/MSSS),
+  a Curiosity Mastcam frame of Gale Crater. That image is not redistributed here;
+  only the four albedo constants derived from it appear in the source.

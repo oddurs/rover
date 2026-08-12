@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 
+import { GradePanel } from "@/components/GradePanel";
 import { Hud } from "@/components/Hud";
 import { Scene } from "@/components/Scene";
 
@@ -13,6 +14,7 @@ export default function Home() {
     <main className="relative h-dvh w-full overflow-hidden bg-[#0b0705]">
       <Scene onReady={onReady} />
       <Hud ready={ready} />
+      <GradePanel />
 
       {!ready && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#0b0705]">

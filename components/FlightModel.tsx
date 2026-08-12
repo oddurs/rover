@@ -5,10 +5,8 @@ import { useMemo } from "react";
 import * as THREE from "three";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 
-import { asset } from "@/lib/assets";
 import { GEO } from "@/lib/rover";
-
-export const FLIGHT_MODEL_URL = asset("/models/curiosity.glb");
+import { VEHICLES, type Vehicle } from "@/lib/vehicles";
 
 /**
  * NASA/JPL-Caltech's published Curiosity model, rigged just enough to drive.
@@ -25,35 +23,27 @@ export const FLIGHT_MODEL_URL = asset("/models/curiosity.glb");
  * stations within 5 cm of the ones the engineering model uses.
  */
 
-/** Longitudinal axle stations in the source model, metres. */
-const AXLE_Z = { front: 1.098, middle: -0.087, rear: -1.161 };
-
 /**
- * The source model faces +Z; this app's convention is -Z forward, so the
- * whole thing is turned about its vertical axis.
- */
-const MODEL_YAW = Math.PI;
-
-/**
- * The source model puts its ground plane at y = 0, but the rover's local
+ * The source models put their ground plane at y = 0, but the rover's local
  * origin is the rocker-pivot plane, 0.6 m up. Drop the mesh to match.
  */
 const MODEL_Y = -GEO.rockerPivot.y;
 
-/**
- * Where the mast head sits, measured from the mesh itself: the highest
- * non-wheel vertex is the ChemCam aperture at the top of the mast, 2.22 m
- * above the ground. The cameras ride just below it, at the real Mastcam
- * height of about 1.97 m, and slightly forward so the mast is out of shot.
- */
-const MAST_HEAD: [number, number, number] = [0.32, 1.97 + MODEL_Y, -0.92];
+interface Piece {
+  geometry: THREE.BufferGeometry;
+  material: THREE.Material;
+}
 
 interface Part {
   name: string;
   /** Wheel centre in model space. */
   center: THREE.Vector3;
-  geometry: THREE.BufferGeometry;
-  material: THREE.Material;
+  /**
+   * A wheel is rarely one mesh. Perseverance splits tyre, hub and grousers
+   * across separate materials, so a station collects however many pieces land
+   * on it and they all hang off the one pivot.
+   */
+  pieces: Piece[];
 }
 
 /**
@@ -127,22 +117,33 @@ function extract(src: THREE.BufferGeometry, tris: number[]): THREE.BufferGeometr
 }
 
 interface Rig {
-  body: { geometry: THREE.BufferGeometry; material: THREE.Material }[];
+  body: Piece[];
   wheels: Part[];
 }
 
-function buildRig(scene: THREE.Object3D): Rig {
-  const body: Rig["body"] = [];
-  const wheels: Part[] = [];
+function buildRig(scene: THREE.Object3D, spec: Vehicle): Rig {
+  const body: Piece[] = [];
+  const stations = new Map<string, { box: THREE.Box3; pieces: Piece[] }>();
 
   scene.updateMatrixWorld(true);
+
+  // Which meshes hold the wheels differs by model: Curiosity's six share one
+  // material that nothing else uses; Perseverance keeps all six under a single
+  // named node.
+  const wheelSet = new Set<THREE.Mesh>();
+  if (spec.wheels.by === "node") {
+    const group = scene.getObjectByName(spec.wheels.name);
+    group?.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) wheelSet.add(o as THREE.Mesh);
+    });
+  }
 
   const meshes: THREE.Mesh[] = [];
   scene.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
   });
 
-  const yaw = new THREE.Matrix4().makeRotationY(MODEL_YAW);
+  const yaw = new THREE.Matrix4().makeRotationY(spec.yaw);
 
   for (const mesh of meshes) {
     // Bake the source node transform (the optimiser leaves a scale on it) and
@@ -151,9 +152,11 @@ function buildRig(scene: THREE.Object3D): Rig {
     geo.translate(0, MODEL_Y, 0);
     const material = mesh.material as THREE.Material;
 
-    const isWheels = Array.isArray(mesh.material)
-      ? false
-      : (mesh.material as THREE.Material).name === "wheels";
+    const isWheels =
+      spec.wheels.by === "node"
+        ? wheelSet.has(mesh)
+        : !Array.isArray(mesh.material) &&
+          (mesh.material as THREE.Material).name === spec.wheels.name;
 
     if (!isWheels) {
       body.push({ geometry: geo, material });
@@ -178,7 +181,7 @@ function buildRig(scene: THREE.Object3D): Rig {
       const side = cx < 0 ? "L" : "R";
       let station = 0;
       let best = Infinity;
-      [AXLE_Z.front, AXLE_Z.middle, AXLE_Z.rear].forEach((z, i) => {
+      spec.axleZ.forEach((z, i) => {
         const d = Math.abs(cz - -z);
         if (d < best) {
           best = d;
@@ -194,24 +197,39 @@ function buildRig(scene: THREE.Object3D): Rig {
     for (const [name, tris] of buckets) {
       const sub = extract(geo, tris);
       sub.computeBoundingBox();
-      const center = new THREE.Vector3();
-      sub.boundingBox!.getCenter(center);
-      // Re-origin on the axle so the wheel spins about its own centre.
-      sub.translate(-center.x, -center.y, -center.z);
-      sub.computeBoundingSphere();
-      wheels.push({ name, center, geometry: sub, material });
+      const box = sub.boundingBox!.clone();
+      const existing = stations.get(name);
+      if (existing) {
+        existing.box.union(box);
+        existing.pieces.push({ geometry: sub, material });
+      } else {
+        stations.set(name, { box, pieces: [{ geometry: sub, material }] });
+      }
     }
+  }
+
+  // One pivot per station, placed at the centre of everything that landed on
+  // it, with each piece re-origined onto that pivot so they spin together.
+  const wheels: Part[] = [];
+  for (const [name, st] of stations) {
+    const center = new THREE.Vector3();
+    st.box.getCenter(center);
+    for (const piece of st.pieces) {
+      piece.geometry.translate(-center.x, -center.y, -center.z);
+      piece.geometry.computeBoundingSphere();
+    }
+    wheels.push({ name, center, pieces: st.pieces });
   }
 
   return { body, wheels };
 }
 
-export function FlightModel() {
-  const gltf = useGLTF(FLIGHT_MODEL_URL, undefined, undefined, (loader) => {
+export function FlightModel({ vehicle }: { vehicle: Vehicle }) {
+  const gltf = useGLTF(vehicle.url, undefined, undefined, (loader) => {
     loader.setMeshoptDecoder(MeshoptDecoder);
   });
 
-  const rig = useMemo(() => buildRig(gltf.scene), [gltf.scene]);
+  const rig = useMemo(() => buildRig(gltf.scene, vehicle), [gltf.scene, vehicle]);
 
   return (
     <group>
@@ -226,7 +244,7 @@ export function FlightModel() {
       ))}
 
       {/* The published mesh has no mast node; give the cameras one to ride. */}
-      <group name="mastHead" position={MAST_HEAD} />
+      <group name="mastHead" position={vehicle.mastHead} />
 
       {rig.wheels.map((w) => {
         // Front and rear corners steer; the middle pair does not.
@@ -236,7 +254,15 @@ export function FlightModel() {
           w.name[0] + (w.name.endsWith("spin0") ? "F" : w.name.endsWith("spin1") ? "M" : "R");
         const wheel = (
           <group name={w.name} userData={{ wheel: tag }}>
-            <mesh geometry={w.geometry} material={w.material} castShadow receiveShadow />
+            {w.pieces.map((piece, i) => (
+              <mesh
+                key={i}
+                geometry={piece.geometry}
+                material={piece.material}
+                castShadow
+                receiveShadow
+              />
+            ))}
           </group>
         );
         return (
@@ -249,4 +275,4 @@ export function FlightModel() {
   );
 }
 
-useGLTF.preload(FLIGHT_MODEL_URL);
+for (const v of Object.values(VEHICLES)) useGLTF.preload(v.url);

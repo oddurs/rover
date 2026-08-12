@@ -5,6 +5,10 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
 import { getView } from "@/lib/cameras";
+import { getFilter } from "@/lib/filters";
+import { GRADE_GLSL, grade, lut } from "@/lib/grading";
+import { pano, panoramaAdvance, panoramaTick, tileX } from "@/lib/panorama";
+import { capture as grab } from "@/lib/capture";
 import { useUi } from "@/lib/store";
 
 /**
@@ -38,6 +42,12 @@ precision highp float;
 varying vec2 vUv;
 
 uniform sampler2D uScene;
+uniform sampler2D uSceneR;
+uniform float uStereo;
+uniform vec3  uFilterW;
+uniform float uFilterOn;
+uniform float uFilterGain;
+uniform float uND;
 uniform vec2  uFrameHalf;      // instrument frame half-extents, canvas NDC
 uniform float uFrameAspect;    // frame width / height
 uniform float uCanvasAspect;
@@ -49,6 +59,33 @@ uniform float uCircular;
 uniform float uExternal;
 uniform float uVignette;
 uniform float uGrain;
+
+${GRADE_GLSL}
+
+/**
+ * Red/cyan anaglyph.
+ *
+ * The instruments this is offered on are stereo pairs with real baselines, and
+ * the two widest — Navcam and Hazcam — have no colour filter array at all, so
+ * their frames are grey and the composite carries no retinal rivalry. For the
+ * colour Mastcams the left eye contributes luminance to red and the right eye
+ * keeps green and blue, which is the usual compromise.
+ */
+/** The detector's response: filter band first, then colour or greyscale. */
+vec3 respond(vec3 c, float mono) {
+  c *= uND;
+  if (uFilterOn > 0.5) {
+    // A science band comes back as one number per pixel, not three.
+    return vec3(dot(c, uFilterW) * uFilterGain);
+  }
+  if (mono > 0.5) return vec3(dot(c, vec3(0.2126, 0.7152, 0.0722)));
+  return c;
+}
+
+vec3 anaglyph(vec3 l, vec3 r) {
+  float lum = dot(l, vec3(0.2126, 0.7152, 0.0722));
+  return vec3(lum, r.g, r.b);
+}
 
 vec3 toSrgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -86,20 +123,41 @@ void main() {
       src = vUv;
     }
 
-    col = texture2D(uScene, src).rgb;
+    // Each eye gets the detector's own response *before* they are combined.
+    // Applying the monochrome conversion afterwards simply flattens the
+    // anaglyph back to grey, which is a good way to spend an afternoon.
+    vec3 l = respond(texture2D(uScene, src).rgb, uMono);
+    if (uStereo > 0.5) {
+      col = anaglyph(l, respond(texture2D(uSceneR, src).rgb, uMono));
+    } else {
+      col = l;
+    }
     vig = 1.0 - uVignette * r * r;
   }
 
-  // These detectors carry no colour filter array, so their frames are grey.
-  if (uMono > 0.5) col = vec3(dot(col, vec3(0.2126, 0.7152, 0.0722)));
+  // External views only; instrument views handled their own response above.
+  if (uMono > 0.5 && uExternal > 0.5) {
+    col = vec3(dot(col, vec3(0.2126, 0.7152, 0.0722)));
+  }
 
   col *= vig;
+
+  // The grade sits on top of everything, the way a grade sits on top of a shot.
+  col = gradeLinear(col);
   col = toSrgb(col);
+  if (uLutMix > 0.0) col = mix(col, applyLut(col), uLutMix);
+
+  // Frame-wide falloff, separate from the instrument's own vignette.
+  if (uGVignette > 0.0) {
+    vec2 q = vUv - 0.5;
+    col *= 1.0 - uGVignette * clamp(dot(q, q) * 2.1, 0.0, 1.0);
+  }
 
   // A whisper of sensor grain, so instrument frames don't read as CG-clean.
-  if (uGrain > 0.0) {
+  float grainAmt = max(uGrain, uGGrain);
+  if (grainAmt > 0.0) {
     float n = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453);
-    col += (n - 0.5) * uGrain;
+    col += (n - 0.5) * grainAmt;
   }
 
   gl_FragColor = vec4(col, 1.0);
@@ -111,20 +169,28 @@ const MAX_RENDER_FOV = 168;
 
 interface Rig {
   target: THREE.WebGLRenderTarget;
+  targetR: THREE.WebGLRenderTarget;
+  /** Composited output, kept readable for panorama capture. */
+  capture: THREE.WebGLRenderTarget;
+  pixels: Uint8Array;
+  scratch: HTMLCanvasElement;
   material: THREE.ShaderMaterial;
   quadScene: THREE.Scene;
   quadCam: THREE.OrthographicCamera;
 }
 
 function createRig(): Rig {
-  const target = new THREE.WebGLRenderTarget(1, 1, {
+  const opts = {
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
     // Half-float keeps the pass in linear light with room to spare, so the
     // monochrome conversion and vignette happen before the sRGB encode.
     type: THREE.HalfFloatType,
     depthBuffer: true,
-  });
+  } as const;
+  const target = new THREE.WebGLRenderTarget(1, 1, opts);
+  // Second eye. Only rendered into when a stereo instrument is selected.
+  const targetR = new THREE.WebGLRenderTarget(1, 1, opts);
 
   const material = new THREE.ShaderMaterial({
     vertexShader: VERT,
@@ -133,6 +199,26 @@ function createRig(): Rig {
     depthWrite: false,
     uniforms: {
       uScene: { value: null as THREE.Texture | null },
+      uSceneR: { value: null as THREE.Texture | null },
+      uStereo: { value: 0 },
+      uFilterW: { value: new THREE.Vector3(1, 0, 0) },
+      uFilterOn: { value: 0 },
+      uFilterGain: { value: 1 },
+      uND: { value: 1 },
+      uGExposure: { value: 0 },
+      uGContrast: { value: 1 },
+      uGSaturation: { value: 1 },
+      uGTemperature: { value: 0 },
+      uGTint: { value: 0 },
+      uGLift: { value: 0 },
+      uGShadowTint: { value: new THREE.Vector3(0.16, 0.34, 0.62) },
+      uGHighTint: { value: new THREE.Vector3(1.0, 0.72, 0.36) },
+      uGToning: { value: 0 },
+      uGVignette: { value: 0 },
+      uGGrain: { value: 0 },
+      uLut: { value: null as THREE.Texture | null },
+      uLutSize: { value: 2 },
+      uLutMix: { value: 0 },
       uFrameHalf: { value: new THREE.Vector2(1, 1) },
       uFrameAspect: { value: 1 },
       uCanvasAspect: { value: 1 },
@@ -152,8 +238,20 @@ function createRig(): Rig {
   quad.frustumCulled = false;
   quadScene.add(quad);
 
+  // Plain bytes: the quad has already encoded to sRGB, so this can be read
+  // straight into an ImageData without any further conversion.
+  const capture = new THREE.WebGLRenderTarget(1, 1, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: false,
+  });
+
   return {
     target,
+    targetR,
+    capture,
+    pixels: new Uint8Array(0),
+    scratch: document.createElement("canvas"),
     material,
     quadScene,
     quadCam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
@@ -168,6 +266,8 @@ export function Optics() {
   useEffect(() => {
     return () => {
       rig.current?.target.dispose();
+      rig.current?.targetR.dispose();
+      rig.current?.capture.dispose();
       rig.current?.material.dispose();
       rig.current = null;
     };
@@ -176,7 +276,8 @@ export function Optics() {
   // Priority > 0 takes over the render loop; nothing else draws the frame.
   useFrame((state) => {
     if (!rig.current) rig.current = createRig();
-    const { target, material, quadScene, quadCam } = rig.current;
+    const rg = rig.current;
+    const { target, targetR, capture, material, quadScene, quadCam } = rg;
     const { gl, scene, camera, size, viewport } = state;
 
     const view = getView(useUi.getState().view);
@@ -185,7 +286,11 @@ export function Optics() {
 
     const pw = Math.max(1, Math.floor(W * viewport.dpr));
     const ph = Math.max(1, Math.floor(H * viewport.dpr));
-    if (target.width !== pw || target.height !== ph) target.setSize(pw, ph);
+    if (target.width !== pw || target.height !== ph) {
+      target.setSize(pw, ph);
+      targetR.setSize(pw, ph);
+      capture.setSize(pw, ph);
+    }
 
     // Fit the instrument's frame inside the window.
     const frameH = view.aspect === 0 ? H : Math.min(H, W / view.aspect);
@@ -222,11 +327,95 @@ export function Optics() {
     u.uVignette.value = view.mount === "external" ? 0 : view.fisheye ? 0.5 : 0.26;
     u.uGrain.value = view.mount === "external" ? 0 : 0.016;
 
-    gl.setRenderTarget(target);
-    gl.render(scene, camera);
-    gl.setRenderTarget(null);
+    // Filters only exist on the Mastcams.
+    const ui = useUi.getState();
+    const filt = getFilter(ui.filter);
+    const filtered = view.id.startsWith("mastcam") && filt.weights !== null;
+    u.uFilterOn.value = filtered ? 1 : 0;
+    u.uFilterGain.value = filt.gain;
+    u.uND.value = view.id.startsWith("mastcam") ? filt.nd : 1;
+    if (filt.weights) {
+      (u.uFilterW.value as THREE.Vector3).set(...filt.weights);
+    }
+
+    // Stereo is only offered where the real instrument is a pair.
+    const stereo = useUi.getState().stereo && view.baseline > 0 && view.mount !== "external";
+    u.uStereo.value = stereo ? 1 : 0;
+
+    if (stereo) {
+      // Step the camera to each eye along its own right-hand axis, at half the
+      // real baseline either side of the mount.
+      const half = view.baseline / 2;
+      camera.translateX(-half);
+      gl.setRenderTarget(target);
+      gl.render(scene, camera);
+      camera.translateX(2 * half);
+      gl.setRenderTarget(targetR);
+      gl.render(scene, camera);
+      camera.translateX(-half);
+      gl.setRenderTarget(null);
+      u.uSceneR.value = targetR.texture;
+    } else {
+      gl.setRenderTarget(target);
+      gl.render(scene, camera);
+      gl.setRenderTarget(null);
+    }
 
     u.uScene.value = target.texture;
+
+    // Grade, read straight off the live object so the panel is immediate.
+    u.uGExposure.value = grade.exposure;
+    u.uGContrast.value = grade.contrast;
+    u.uGSaturation.value = grade.saturation;
+    u.uGTemperature.value = grade.temperature;
+    u.uGTint.value = grade.tint;
+    u.uGLift.value = grade.lift;
+    (u.uGShadowTint.value as THREE.Vector3).set(...grade.shadowTint);
+    (u.uGHighTint.value as THREE.Vector3).set(...grade.highlightTint);
+    u.uGToning.value = grade.toning;
+    u.uGVignette.value = grade.vignette;
+    u.uGGrain.value = grade.grain;
+    u.uLut.value = lut.texture;
+    u.uLutSize.value = Math.max(2, lut.size);
+    u.uLutMix.value = lut.texture ? grade.lutMix : 0;
+
+    // Panorama: composite once into a readable target, lift the instrument
+    // frame out of it, then present the same pass to the screen.
+    const wantFrame = grab.pending;
+    if ((panoramaTick() && pano.canvas) || wantFrame) {
+      const fw = Math.max(1, Math.round(frameW * viewport.dpr));
+      const fh = Math.max(1, Math.round(frameH * viewport.dpr));
+      const ox = Math.round((pw - fw) / 2);
+      const oy = Math.round((ph - fh) / 2);
+
+      gl.setRenderTarget(capture);
+      gl.render(quadScene, quadCam);
+
+      const need = fw * fh * 4;
+      if (rg.pixels.length !== need) rg.pixels = new Uint8Array(need);
+      gl.readRenderTargetPixels(capture, ox, oy, fw, fh, rg.pixels);
+      gl.setRenderTarget(null);
+
+      rg.scratch.width = fw;
+      rg.scratch.height = fh;
+      const sctx = rg.scratch.getContext("2d");
+      if (sctx) {
+        const img = sctx.createImageData(fw, fh);
+        // readRenderTargetPixels hands back rows bottom-up.
+        for (let y = 0; y < fh; y++) {
+          const src = (fh - 1 - y) * fw * 4;
+          img.data.set(rg.pixels.subarray(src, src + fw * 4), y * fw * 4);
+        }
+        sctx.putImageData(img, 0, 0);
+        if (pano.active && pano.canvas) {
+          const dctx = pano.canvas.getContext("2d");
+          dctx?.drawImage(rg.scratch, 0, 0, fw, fh, tileX(), 0, pano.tileW, pano.tileH);
+        }
+        if (wantFrame) grab.deliver(rg.scratch, fw, fh);
+      }
+      if (pano.active) panoramaAdvance();
+    }
+
     gl.render(quadScene, quadCam);
   }, 1);
 

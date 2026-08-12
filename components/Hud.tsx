@@ -5,7 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { bearingTo, landmarks, toLatLon, type Landmark } from "@/lib/landmarks";
 import { GALE, MARS, compass, formatLTST } from "@/lib/mars";
 import { VIEWS, getView } from "@/lib/cameras";
-import { MODEL_LABELS, telemetry, useUi } from "@/lib/store";
+import { BATTERY_JOULES, SIM_TURN_RATE } from "@/lib/drive";
+import { MODE_LABELS, telemetry, useUi } from "@/lib/store";
+import { Imaging } from "@/components/Imaging";
+import { FILTERS, getFilter } from "@/lib/filters";
+import { VEHICLES } from "@/lib/vehicles";
 
 const DEG = 180 / Math.PI;
 
@@ -59,8 +63,16 @@ export function Hud({ ready }: { ready: boolean }) {
   const toggleTimeFrozen = useUi((s) => s.toggleTimeFrozen);
   const ls = useUi((s) => s.ls);
   const setLs = useUi((s) => s.setLs);
-  const speedScale = useUi((s) => s.speedScale);
-  const setSpeedScale = useUi((s) => s.setSpeedScale);
+  const mode = useUi((s) => s.mode);
+  const setMode = useUi((s) => s.setMode);
+  const timeCompression = useUi((s) => s.timeCompression);
+  const requestReset = useUi((s) => s.requestReset);
+  const stereo = useUi((s) => s.stereo);
+  const toggleTraverse = useUi((s) => s.toggleTraverse);
+  const filterId = useUi((s) => s.filter);
+  const setFilter = useUi((s) => s.setFilter);
+  const toggleStereo = useUi((s) => s.toggleStereo);
+  const setTimeCompression = useUi((s) => s.setTimeCompression);
   const modelKind = useUi((s) => s.modelKind);
   const toggleModel = useUi((s) => s.toggleModel);
 
@@ -78,11 +90,16 @@ export function Hud({ ready }: { ready: boolean }) {
       else if (e.code === "KeyH") toggleHud();
       else if (e.code === "KeyT") toggleTimeFrozen();
       else if (e.code === "KeyM") toggleModel();
+      else if (e.code === "Digit1") setMode("sim");
+      else if (e.code === "Digit2") setMode("arcade");
+      else if (e.code === "KeyR") requestReset();
+      else if (e.code === "KeyE") toggleStereo();
+      else if (e.code === "KeyG") toggleTraverse();
       else if (e.code === "Slash") toggleHelp();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cycleView, toggleHud, toggleTimeFrozen, toggleHelp, toggleModel]);
+  }, [cycleView, toggleHud, toggleTimeFrozen, toggleHelp, toggleModel, setMode, requestReset, toggleStereo, toggleTraverse]);
 
   // Telemetry changes every frame. Poll it and write straight into the DOM
   // rather than routing 60 Hz of numbers through React.
@@ -125,14 +142,46 @@ export function Hud({ ready }: { ready: boolean }) {
       set("hdg", `${heading.toFixed(0).padStart(3, "0")}°`);
       set("compass", compass(heading));
 
-      set("speed", `${(telemetry.speed * 100).toFixed(1)}`);
-      set("truespeed", `${(telemetry.speed / speedScale).toFixed(3)} m/s true`);
+      if (mode === "arcade") {
+        set("speed", `${Math.abs(telemetry.speed).toFixed(1)}`);
+        set(
+          "truespeed",
+          telemetry.airborne
+            ? `AIRBORNE  ${telemetry.airY.toFixed(1)} m  ${telemetry.airtime.toFixed(1)} s`
+            : telemetry.drifting
+              ? `DRIFT  ${Math.abs(telemetry.lateral).toFixed(1)} m/s lateral`
+              : ""
+        );
+      } else {
+        set("speed", `${(telemetry.speed * 100).toFixed(1)}`);
+        set("truespeed", `true rate · ×${timeCompression} time`);
+      }
+      const odoM = mode === "arcade" ? telemetry.odometer : telemetry.trueOdometer;
+      set("odo", odoM > 1000 ? `${(odoM / 1000).toFixed(2)} km` : `${odoM.toFixed(1)} m`);
       set(
-        "odo",
-        telemetry.odometer > 1000
-          ? `${(telemetry.odometer / 1000).toFixed(2)} km`
-          : `${telemetry.odometer.toFixed(1)} m`
+        "slip",
+        telemetry.slip > 0.01 ? `${(telemetry.slip * 100).toFixed(0)}% slip` : "no slip"
       );
+      const slipEl = nodes.get("slip");
+      if (slipEl) {
+        slipEl.style.color =
+          telemetry.slip > 0.5
+            ? "var(--color-warn)"
+            : telemetry.slip > 0.15
+              ? "var(--color-amber)"
+              : "var(--color-ink-faint)";
+      }
+      const crashWrap = nodes.get("crashwrap");
+      if (crashWrap) crashWrap.style.display = telemetry.crashed ? "block" : "none";
+
+      const soc = telemetry.battery / BATTERY_JOULES;
+      set("soc", `${(soc * 100).toFixed(0)}%`);
+      const socBar = nodes.get("socbar");
+      if (socBar) {
+        socBar.style.width = `${Math.max(0, soc * 100)}%`;
+        socBar.style.background =
+          soc < 0.15 ? "var(--color-warn)" : soc < 0.35 ? "var(--color-amber)" : "var(--color-signal)";
+      }
 
       set("pitch", `${(telemetry.pitch * DEG).toFixed(1)}°`);
       set("roll", `${(telemetry.roll * DEG).toFixed(1)}°`);
@@ -183,7 +232,7 @@ export function Hud({ ready }: { ready: boolean }) {
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [ready, marks, speedScale]);
+  }, [ready, marks, mode, timeCompression]);
 
   if (!ready) return null;
 
@@ -191,6 +240,8 @@ export function Hud({ ready }: { ready: boolean }) {
 
   return (
     <div ref={rootRef} className="pointer-events-none fixed inset-0 select-none">
+      <Imaging />
+
       {/* Reticle, only in the mast views. */}
       {instrument && showHud && (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -199,6 +250,30 @@ export function Hud({ ready }: { ready: boolean }) {
             <div className="absolute left-1/2 bottom-0 h-5 w-px -translate-x-1/2 bg-[var(--color-amber)]" />
             <div className="absolute top-1/2 left-0 h-px w-5 -translate-y-1/2 bg-[var(--color-amber)]" />
             <div className="absolute top-1/2 right-0 h-px w-5 -translate-y-1/2 bg-[var(--color-amber)]" />
+          </div>
+        </div>
+      )}
+
+      {/* Upside down: nothing works until it is righted. */}
+      {mode === "arcade" && (
+        <div
+          data-tm="crashwrap"
+          className="pointer-events-none absolute left-1/2 top-[18%] -translate-x-1/2"
+          style={{ display: "none" }}
+        >
+          <div className="panel px-5 py-3 text-center">
+            <div className="text-[12px] tracking-[0.2em] text-[var(--color-warn)]">
+              ON ITS BACK
+            </div>
+            <p className="mt-1 text-[9px] text-[var(--color-ink-faint)]">
+              Landed past 60° from upright. It is not getting up on its own.
+            </p>
+            <button
+              onClick={requestReset}
+              className="pointer-events-auto mt-2 border border-[var(--color-amber)] px-4 py-1.5 text-[10px] tracking-[0.18em] text-[var(--color-amber)] transition-colors hover:bg-[var(--color-amber)] hover:text-black"
+            >
+              RESET  ·  R
+            </button>
           </div>
         </div>
       )}
@@ -276,7 +351,9 @@ export function Hud({ ready }: { ready: boolean }) {
                   <span data-tm="speed" className="value-lg">
                     0.0
                   </span>
-                  <span className="text-[10px] text-[var(--color-ink-faint)]">cm/s</span>
+                  <span className="text-[10px] text-[var(--color-ink-faint)]">
+                    {mode === "arcade" ? "m/s" : "cm/s"}
+                  </span>
                 </div>
               </div>
             </div>
@@ -295,11 +372,42 @@ export function Hud({ ready }: { ready: boolean }) {
             </div>
 
             <div className="mt-2.5 border-t border-[var(--color-edge)] pt-2.5">
-              <div className="label mb-1.5">Odometry</div>
-              <span data-tm="odo" className="value">
-                0.0 m
-              </span>
+              <div className="flex items-baseline justify-between">
+                <div>
+                  <div className="label mb-1.5">
+                    {mode === "arcade" ? "Distance" : "Distance made good"}
+                  </div>
+                  <span data-tm="odo" className="value">
+                    0.0 m
+                  </span>
+                </div>
+                <span data-tm="slip" className="text-[10px] text-[var(--color-ink-faint)]">
+                  no slip
+                </span>
+              </div>
             </div>
+
+            {mode === "sim" && (
+              <div className="mt-2.5 border-t border-[var(--color-edge)] pt-2.5">
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <span className="label">Battery</span>
+                  <span data-tm="soc" className="text-[10px] text-[var(--color-ink-dim)]">
+                    100%
+                  </span>
+                </div>
+                <div className="h-[3px] w-full bg-[rgba(226,148,92,0.14)]">
+                  <div
+                    data-tm="socbar"
+                    className="h-full"
+                    style={{ width: "100%", background: "var(--color-signal)" }}
+                  />
+                </div>
+                <p className="mt-1 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
+                  The RTG makes 110 W; driving draws nearer 290. A real sol is
+                  mostly spent sitting still, charging.
+                </p>
+              </div>
+            )}
 
             {marks.length > 0 && (
               <div className="mt-2.5 border-t border-[var(--color-edge)] pt-2.5">
@@ -327,7 +435,36 @@ export function Hud({ ready }: { ready: boolean }) {
           </Panel>
 
           {/* --- Right column: camera, vehicle, environment --- */}
-          <div className="absolute right-4 top-4 flex w-[236px] flex-col gap-1.5">
+          <div className="absolute right-4 top-4 flex max-h-[calc(100vh-24rem)] w-[236px] flex-col gap-1.5 overflow-y-auto">
+          <Panel>
+            <div className="label border-b border-[var(--color-edge)] pb-2">Mode</div>
+            <div className="mt-2 grid grid-cols-2 gap-1">
+              {(["sim", "arcade"] as const).map((m, i) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`pointer-events-auto border px-1 py-1.5 text-[9px] tracking-[0.12em] transition-colors ${
+                    m === mode
+                      ? "border-[var(--color-amber)] text-[var(--color-amber)]"
+                      : "border-[var(--color-edge)] text-[var(--color-ink-dim)] hover:text-[var(--color-ink)]"
+                  }`}
+                >
+                  {i + 1} {MODE_LABELS[m]}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
+              {mode === "sim"
+                ? "Real speed and turn rate. Time is compressed, the rover is not."
+                : "It slides, and Mars gravity hangs a jump for three seconds."}
+            </p>
+            <button
+              onClick={requestReset}
+              className="pointer-events-auto mt-2 w-full border border-[var(--color-edge-strong)] px-2 py-1 text-[9px] tracking-[0.16em] text-[var(--color-ink-dim)] transition-colors hover:text-[var(--color-ink)]"
+            >
+              RESET ROVER · R
+            </button>
+          </Panel>
           <Panel>
             <div className="flex items-center justify-between border-b border-[var(--color-edge)] pb-2">
               <span className="label">Camera</span>
@@ -361,6 +498,43 @@ export function Hud({ ready }: { ready: boolean }) {
               ))}
             </div>
 
+            {view.id.startsWith("mastcam") && (
+              <div className="mt-2 border-t border-[var(--color-edge)] pt-2">
+                <div className="label mb-1">Filter wheel</div>
+                <div className="grid grid-cols-4 gap-1">
+                  {FILTERS.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => setFilter(f.id)}
+                      title={f.note}
+                      className={`pointer-events-auto border px-0.5 py-1 text-[8px] tracking-[0.06em] transition-colors ${
+                        f.id === filterId
+                          ? "border-[var(--color-amber)] text-[var(--color-amber)]"
+                          : "border-[var(--color-edge)] text-[var(--color-ink-dim)] hover:text-[var(--color-ink)]"
+                      }`}
+                    >
+                      {f.label.split(" ")[1]}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
+                  {getFilter(filterId).note}
+                </p>
+              </div>
+            )}
+
+            {instrument && view.baseline > 0 && (
+              <button
+                onClick={toggleStereo}
+                className={`pointer-events-auto mt-2 w-full border px-2 py-1 text-[9px] tracking-[0.14em] transition-colors ${
+                  stereo
+                    ? "border-[var(--color-amber)] text-[var(--color-amber)]"
+                    : "border-[var(--color-edge-strong)] text-[var(--color-ink-dim)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                {stereo ? "STEREO ON" : "STEREO"} · E · {(view.baseline * 100).toFixed(1)} cm
+              </button>
+            )}
             {instrument && (
               <div className="mt-2 flex flex-wrap gap-x-2.5 gap-y-0.5 border-t border-[var(--color-edge)] pt-2 text-[9px] text-[var(--color-ink-faint)]">
                 <span>{view.fov}° FOV</span>
@@ -379,7 +553,9 @@ export function Hud({ ready }: { ready: boolean }) {
               <div className="flex flex-col gap-0.5">
                 <span className="label">Vehicle</span>
                 <span className="text-[11px] text-[var(--color-ink)]">
-                  {MODEL_LABELS[modelKind]}
+                  {modelKind === "engineering"
+                    ? "ENGINEERING MODEL"
+                    : VEHICLES[modelKind].label}
                 </span>
               </div>
               <button
@@ -390,9 +566,9 @@ export function Hud({ ready }: { ready: boolean }) {
               </button>
             </div>
             <p className="mt-1.5 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
-              {modelKind === "flight"
-                ? "NASA/JPL-Caltech mesh. Ships fused, so the suspension is rigid."
-                : "Built from primitives — the rocker-bogie linkage articulates."}
+              {modelKind === "engineering"
+                ? "Built from primitives — the only one whose rocker-bogie articulates."
+                : `${VEHICLES[modelKind].full}. ${VEHICLES[modelKind].note}`}
             </p>
           </Panel>
 
@@ -437,26 +613,32 @@ export function Hud({ ready }: { ready: boolean }) {
                       onChange={(e) => setLs(Number(e.target.value))}
                     />
                   </div>
-                  <div>
-                    <div className="mb-1 flex justify-between">
-                      <span className="label">Speed multiplier</span>
-                      <span className="text-[10px] text-[var(--color-ink-dim)]">
-                        ×{speedScale}
-                      </span>
+                  {mode === "sim" && (
+                    <div>
+                      <div className="mb-1 flex justify-between">
+                        <span className="label">Time compression</span>
+                        <span className="text-[10px] text-[var(--color-ink-dim)]">
+                          ×{timeCompression}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={400}
+                        step={1}
+                        value={timeCompression}
+                        onChange={(e) => setTimeCompression(Number(e.target.value))}
+                      />
+                      <p className="mt-1 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
+                        The rover always drives at {MARS.roverTopSpeed * 100} cm/s — its
+                        real top speed. This runs the clock, the sun and the vehicle
+                        together at ×{timeCompression}, so you are watching a time-lapse
+                        rather than a rover that has been made fast. Turning in place
+                        takes {(360 / ((SIM_TURN_RATE * 180) / Math.PI) / 60).toFixed(0)}{" "}
+                        minutes for a full circle.
+                      </p>
                     </div>
-                    <input
-                      type="range"
-                      min={1}
-                      max={400}
-                      step={1}
-                      value={speedScale}
-                      onChange={(e) => setSpeedScale(Number(e.target.value))}
-                    />
-                    <p className="mt-1 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
-                      Curiosity&apos;s real top speed is {MARS.roverTopSpeed * 100} cm/s. At
-                      ×1 it would take about a minute to cross this panel.
-                    </p>
-                  </div>
+                  )}
                 </div>
               </Panel>
             )}
@@ -517,10 +699,29 @@ export function Hud({ ready }: { ready: boolean }) {
                     <b className="text-[var(--color-ink)]">A / D</b> alone — turn in place
                   </span>
                   <span>
-                    <b className="text-[var(--color-ink)]">Shift</b> faster
+                    <b className="text-[var(--color-ink)]">Shift</b>{" "}
+                    {mode === "arcade" ? "boost" : "faster"}
                   </span>
                   <span>
-                    <b className="text-[var(--color-ink)]">Space</b> brake
+                    <b className="text-[var(--color-ink)]">Space</b>{" "}
+                    {mode === "arcade" ? "jump" : "brake"}
+                  </span>
+                  {mode === "arcade" && (
+                    <span>
+                      <b className="text-[var(--color-ink)]">X</b> handbrake
+                    </span>
+                  )}
+                  {mode === "arcade" && (
+                    <span>
+                      <b className="text-[var(--color-ink)]">R</b> reset
+                    </span>
+                  )}
+                  <span>
+                    <b className="text-[var(--color-ink)]">1 / 2</b> sim / arcade
+                  </span>
+                  <span>
+                    <b className="text-[var(--color-ink)]">G</b> traverse ·{" "}
+                    <b className="text-[var(--color-ink)]">E</b> stereo
                   </span>
                   <span>
                     <b className="text-[var(--color-ink)]">C</b> next camera ·{" "}

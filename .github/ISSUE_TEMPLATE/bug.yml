@@ -1,0 +1,33 @@
+name: Bug
+description: Something renders, drives or computes wrongly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: A screenshot is worth a lot here — most bugs in this project are visual.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: Deep link
+      description: "The app encodes its state in the URL, so a link reproduces the exact view. e.g. ?cam=navcam&hdg=138&t=17.9"
+  - type: input
+    id: gpu
+    attributes:
+      label: Browser and GPU
+      description: "chrome://gpu reports the renderer string; a lot of this is shader work."
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Shader compile errors in particular.
+      render: shell

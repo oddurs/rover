@@ -7,6 +7,7 @@ import * as THREE from "three";
 
 import { getView } from "@/lib/cameras";
 import { MAST_LIMITS, mast, mounts } from "@/lib/mounts";
+import { aimAt, raycastTerrain } from "@/lib/targeting";
 import { useUi } from "@/lib/store";
 
 const CHASE_OFFSET = new THREE.Vector3(0, 3.0, 7.2);
@@ -25,6 +26,7 @@ export function CameraRig() {
   const view = getView(viewId);
 
   const controls = useRef<React.ComponentRef<typeof OrbitControls>>(null);
+  const camRef = useRef<THREE.Camera | null>(null);
   const prevRover = useRef(new THREE.Vector3());
   const seeded = useRef(false);
 
@@ -41,8 +43,10 @@ export function CameraRig() {
     let lastX = 0;
     let lastY = 0;
 
+    let moved = 0;
     const down = (e: PointerEvent) => {
       dragging = true;
+      moved = 0;
       lastX = e.clientX;
       lastY = e.clientY;
       el.setPointerCapture(e.pointerId);
@@ -51,16 +55,48 @@ export function CameraRig() {
       if (!dragging) return;
       // Scale by field of view, so a narrow optic slews proportionally slower.
       const k = (view.fov / 45) * 0.0042;
+      mast.slewing = false;
       mast.pan -= (e.clientX - lastX) * k;
       mast.tilt = THREE.MathUtils.clamp(
         mast.tilt - (e.clientY - lastY) * k,
         MAST_LIMITS.tiltMin,
         MAST_LIMITS.tiltMax
       );
+      moved += Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY);
       lastX = e.clientX;
       lastY = e.clientY;
     };
     const up = (e: PointerEvent) => {
+      // A click rather than a drag: aim the mast at whatever was under it.
+      // Only on the rectilinear optics — the fisheye views do not map back
+      // to a ray without undoing the projection first.
+      if (dragging && moved < 4 && !view.fisheye) {
+        const rect = el.getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const cam = camRef.current;
+        const head = mounts.mastHead;
+        const root = mounts.root;
+        if (cam && head && root) {
+          const dir = new THREE.Vector3(ndc.x, ndc.y, 0.5)
+            .unproject(cam)
+            .sub(cam.position)
+            .normalize();
+          const hit = raycastTerrain(cam.position, dir);
+          if (hit) {
+            const mastWorld = new THREE.Vector3();
+            head.getWorldPosition(mastWorld);
+            const aim = aimAt(hit, mastWorld, root.rotation.y);
+            mast.targetPan = aim.pan;
+            mast.targetTilt = THREE.MathUtils.clamp(
+              aim.tilt, MAST_LIMITS.tiltMin, MAST_LIMITS.tiltMax
+            );
+            mast.slewing = true;
+          }
+        }
+      }
       dragging = false;
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
     };
@@ -80,6 +116,7 @@ export function CameraRig() {
   useFrame((state, rawDt) => {
     const dt = Math.min(rawDt, 0.05);
     const cam = state.camera;
+    camRef.current = cam;
 
     const dbg = (window as unknown as { rover?: Record<string, unknown> }).rover;
     if (dbg) dbg.camera = cam;
@@ -145,7 +182,11 @@ export function CameraRig() {
       // Stop just short of the horizon so you never orbit under the ground.
       maxPolarAngle={Math.PI * 0.495}
       enableDamping
-      dampingFactor={0.08}
+      dampingFactor={0.06}
+      // The default dolly step is a lurch. Smaller increments plus damping
+      // turn the wheel into a smooth push in and out.
+      zoomSpeed={0.42}
+      rotateSpeed={0.65}
     />
   ) : null;
 }

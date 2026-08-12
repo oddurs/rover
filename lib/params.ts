@@ -5,13 +5,15 @@
  *   ?t=17.6    local true solar time, hours
  *   ?ls=250    solar longitude (season), degrees
  *   ?cam=hazcam-front   any instrument id from lib/cameras.ts
+ *   ?mode=arcade
  */
 
 import type { ViewId } from "./cameras";
 import { VIEWS } from "./cameras";
+import type { DriveMode } from "./drive";
 import type { ModelKind } from "./store";
 
-const MODELS: ModelKind[] = ["flight", "engineering"];
+const MODELS: ModelKind[] = ["curiosity", "perseverance", "engineering"];
 
 function read(): URLSearchParams | null {
   if (typeof window === "undefined") return null;
@@ -47,5 +49,9 @@ export function initialView(): ViewId {
 
 export function initialModel(): ModelKind {
   const raw = read()?.get("model");
-  return MODELS.includes(raw as ModelKind) ? (raw as ModelKind) : "flight";
+  return MODELS.includes(raw as ModelKind) ? (raw as ModelKind) : "curiosity";
+}
+
+export function initialMode(): DriveMode {
+  return read()?.get("mode") === "arcade" ? "arcade" : "sim";
 }

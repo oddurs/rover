@@ -44,3 +44,7 @@ next-env.d.ts
 /.venv-tools
 # Raw MOLA band fetched by tools/extract_mola.py (regenerate, don't commit)
 /.data
+
+# Python bytecode from the terrain tools
+__pycache__/
+*.pyc

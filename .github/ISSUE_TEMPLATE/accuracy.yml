@@ -1,0 +1,23 @@
+name: Accuracy
+description: Something claimed to be real isn't
+labels: [accuracy]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are the most valuable issues this project can get. If a number,
+        a position, an optic or a colour is wrong, it undermines the premise.
+  - type: textarea
+    id: claim
+    attributes:
+      label: The claim
+      description: What the code, the README or the HUD asserts, and where.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What is actually the case
+      description: With a source, if you have one.
+    validations:
+      required: true

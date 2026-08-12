@@ -1,15 +1,67 @@
 # Gale Crater
 
-A drivable Mars rover sandbox in the browser. Six-wheel rocker-bogie suspension,
-a real Gale Crater height field, and Mount Sharp on the horizon where it actually
-is.
+**A drivable Mars rover sandbox in the browser.** Six-wheel rocker-bogie
+suspension, a real Gale Crater height field from laser altimetry, and Mount
+Sharp on the horizon where it actually is.
 
 No goals, no score. Drive around and look at Mars.
+
+### [→ Open it](https://oddurs.github.io/rover/)
+
+![Mount Sharp through Curiosity's left Navcam](docs/images/hero.jpg)
+
+<sub>Mount Sharp, 31 km away, through the left Navcam — monochrome and square,
+because that is what the detector produces.</sub>
+
+---
+
+## Quick start
 
 ```bash
 pnpm install
 pnpm dev
 ```
+
+The terrain and both rover meshes are committed, so a clone runs immediately.
+Python tooling is only needed to regenerate them — see [docs/DATA.md](docs/DATA.md).
+
+```bash
+pnpm verify     # lint, typecheck, production build
+pnpm deploy     # build and publish to the gh-pages branch
+```
+
+## The premise
+
+Almost everything here is measured, and the parts that are not are labelled.
+
+- The crater rim is 84 km north-north-west because MOLA measured it there.
+- The rover drives at 4.2 cm/s and turns in place at 1.5°/s, a figure that falls
+  out of its own top speed and its wheel geometry rather than being chosen.
+- The terrain's colour came off a Curiosity Mastcam frame, sampled at three
+  luminance percentiles.
+- Sunsets are blue near the sun because 1.5 µm dust scatters forward, and more
+  strongly at short wavelengths.
+- Seven cameras carry the fields of view of the real instruments, derived from
+  published detector sizes and IFOVs.
+
+What is invented — the sub-460 m terrain detail, the clast field, arcade mode —
+is set out plainly in [docs/DATA.md](docs/DATA.md#what-is-not-real).
+
+|  |  |
+|---|---|
+| ![Blue sunset](docs/images/sunset.jpg) | ![Front Hazcam](docs/images/hazcam.jpg) |
+| The sunset really is blue near the sun. | The front Hazcam: monochrome fisheye, 124°. |
+
+## Contents
+
+- [The terrain is real](#the-terrain-is-real) · [The horizon](#the-horizon) · [The ground](#the-ground)
+- [Two modes](#two-modes) — simulation and arcade
+- [Two rovers](#two-rovers) — Curiosity and Perseverance
+- [The sky](#the-sky) · [Rendering](#rendering) · [Colour grade](#colour-grade)
+- [Looking through the instruments](#looking-through-the-instruments)
+- [The traverse](#the-traverse) · [Controls](#controls) · [Deep links](#deep-links)
+
+---
 
 ## The terrain is real
 
@@ -23,17 +75,6 @@ Everything above about 460 m in scale is measured, not invented: the crater rim
 84 km to the north-north-west, the 5 km rise of Aeolis Mons 31 km to the
 south-east, the slope of the crater floor under the wheels. Drive toward the
 mountain and you are following the same bearing Curiosity did.
-
-To regenerate the data from scratch:
-
-```bash
-python3 -m venv .venv-tools && ./.venv-tools/bin/pip install numpy pillow
-# ~21 MB: only the rows of the MEGDR tile covering Gale
-curl -r 5598720-26265599 \
-  "https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/megt00n090hb.img" \
-  -o .data/gale_band.raw
-./.venv-tools/bin/python tools/extract_mola.py
-```
 
 The output ships as a raw `uint16` buffer rather than a PNG, because browsers
 quietly truncate 16-bit PNGs to 8 bits in canvas — which would quantise 6.6 km of
@@ -91,6 +132,85 @@ same place.
 The dark basaltic sand and dust tinting are plausible, not mapped. There is no
 orbital imagery draped over the terrain.
 
+## Two modes
+
+Press **1** and **2**.
+
+**Simulation** does what Curiosity does. It drives at 4.2 cm/s, turns in place at
+1.5°/s — a figure that falls straight out of that speed and the wheel geometry
+rather than being picked — slips on slopes, and runs a battery the RTG cannot
+refill fast enough to drive continuously. Because 4.2 cm/s is unwatchable, the
+mode compresses *time* rather than speeding up the vehicle: the clock, the sun
+and the rover all advance at the same multiple, so you are watching a time-lapse
+of a real drive rather than a rover that has been made fast. Slip is visible
+from outside, because the wheels keep turning at the commanded rate while the
+ground gives back less — which is why the odometry and the distance actually
+made good are two different readouts.
+
+**Arcade** throws that out and models a free rigid body.
+
+*Grip* is the whole handling model: how fast the velocity vector swings back
+into line with where the hull is pointing. High and the rover goes where it
+points; pull the handbrake (**X**) and it barely does, so the nose comes round
+while the rover keeps travelling the way it already was. Measured: 0° of slip
+cruising, 4° steering on grip, **63° on the handbrake** — a handbrake turn.
+
+*Jumps* (**Space**) squat onto the suspension for 160 ms and then throw, rather
+than teleporting upward. In flight there is no steering, because nothing is
+touching the ground to push against — though the wheels still spin and still
+point wherever you aim them. The hull carries a full orientation quaternion and
+an angular velocity seeded from whatever rate the terrain was already rotating
+it, so driving off a crest keeps the nose dropping. Land past 60° from upright
+and it stays on its back until you reset it (**R**, or the on-screen button).
+
+Landing runs a damped spring rather than an exponential fade, which is the
+difference between absorbing an impact and simply forgetting it: about 10 cm of
+travel, one overshoot, and a rock away from whichever corner touched first —
+scaled by how badly the attitude disagreed with the ground, so coming down
+matching the slope barely stirs it. The hull also *slerps* out of its flight
+orientation over ~0.13 s instead of snapping to the terrain solution in a
+single frame.
+
+The spring integrates implicitly. Explicit integration of a stiff damped spring
+is only stable while `c · dt < 1`, which at this damping breaks above a 48 ms
+frame — and `dt` is clamped at 50 ms. One slow frame used to overshoot the
+damping term, flip the velocity's sign and throw the impact away, which is what
+made landings feel erratic. Solving for the new velocity instead is
+unconditionally stable, so a landing looks the same at 15 fps as at 120.
+
+Measured arc: 5.69 m peak, 3.45 s hang, 0.25 rad/s of tumble.
+
+*Crests throw it off the ground on their own.* Wheels can only push, never
+pull, so contact is lost the moment the curvature the hull is being asked to
+follow demands more than gravity can supply — convexity × v² > g. In 3.72 m/s²
+that is a low bar: at 15 m/s any crest tighter than a 60 m radius does it, and
+under boost the figure is 276 m. Driving fast here means spending a good part of
+the time just off the ground, which is why steering still bites while the wheels
+are within half a metre of it — losing all control on every rise would make the
+thing undriveable. The curvature is measured over a baseline wider than the
+wheelbase, because the suspension swallows anything shorter than the vehicle.
+
+*The suspension works the whole time.* Writing the body's height as a spring
+between it and the surface, the compression obeys u'' = a_ground − k·u − c·u',
+so the vertical acceleration the terrain imposes is a forcing term — feed it in
+and the hull lags each rise, compresses, and pushes back, instead of only
+reacting when it lands. Measured while crossing rough ground at 15 m/s: 4–6 cm
+of travel and about 2° of rock, continuously.
+
+## Colour grade
+
+Backtick opens a grading panel. Exposure, contrast about a mid-grey pivot,
+saturation, a warm/cool axis, black point, and split toning that pulls shadows
+one way and highlights the other — the linear-light half of which runs before
+the transfer function, which is what stops the toning looking like a coloured
+sheet laid over the top. Presets include a modern Mars-film look, a flat
+documentary grade, and a faded 1976 one.
+
+Any Adobe `.cube` 3D LUT can be loaded on top. `sampler3D` does not exist in the
+GLSL version this pass compiles as, so the cube is laid out as N slices side by
+side — N² wide by N tall — and the shader blends between two slices by hand. It
+is applied after the transfer function, which is where a display LUT belongs.
+
 ## Two rovers
 
 Press **M** to swap between them.
@@ -111,9 +231,21 @@ denormalised through `getX`/`getY`/`getZ` before being touched.
 
 11.86 MB → 1.06 MB after webp textures and meshopt.
 
-**Engineering model** — built from primitives, and the one that actually
-articulates. Watch the rocker and bogie angles in the telemetry panel move
-independently as it crosses rough ground.
+![Perseverance in Gale](docs/images/perseverance.jpg)
+
+**Perseverance** — the Mars 2020 mesh, which is far better built: 66 named
+nodes, so the wheels come out of a single `Wheels_objs` object. Its wheels
+measure 0.525 m against Curiosity's 0.50 m, exactly as the real redesign did.
+Its suspension is also one object, so it too is rigid.
+
+Both are placed by fitting a least-squares plane through their six contact
+points, which is the right way to seat a vehicle whose suspension cannot move.
+The difference that makes is measurable: mean clearance lands on 0.25 m either
+way, but the spread across the six wheels is 65 mm rigid against 5.7 mm for the
+articulated engineering model. That gap *is* what rocker-bogie does.
+
+**Engineering model** — built from primitives and the only one whose linkage
+actually articulates. Reach it with `?model=engineering`.
 
 ## The suspension
 
@@ -178,9 +310,13 @@ detaches gravel from its own shadow, which reads as everything floating.
 | `A` / `D` | steer |
 | `A` / `D` with no throttle | turn in place |
 | `Shift` | faster |
-| `Space` | brake |
 | `C` | cycle camera |
-| `M` | swap flight / engineering model |
+| `M` | swap rover |
+| `E` | stereo anaglyph |
+| `G` | show the real traverse |
+| `1` / `2` | simulation / arcade |
+| `Space` | brake (sim) · jump (arcade) |
+| `X` | drift (arcade) |
 | `T` | hold the clock |
 | `H` | hide telemetry |
 | drag, in a mast view | slew the mast |
@@ -220,6 +356,69 @@ published rover dimensions and the geometry of these meshes, not flight CAD.
 MAHLI is absent: it lives on the arm turret, and the arm is fused into the
 flight mesh, so there is nowhere dependable to hang it.
 
+### Stereo
+
+Navcam and Mastcam are stereo *pairs*, and their baselines are published — 42.4
+and 24.2 cm. Press **E** and the scene renders twice at the real separation and
+composites red/cyan. Because the Navcams and Hazcams carry no colour filter
+array their frames are already grey, so the anaglyph has no colour rivalry at
+all. Parallax falls off with distance exactly as it should: rocks a couple of
+metres away separate hard, Mount Sharp at 30 km does not move.
+
+Each eye gets the detector's response *before* the two are combined. Applying
+the monochrome conversion afterwards simply flattens the anaglyph back to grey.
+
+### Panoramas
+
+A rover cannot take a wide picture. It takes a lot of narrow ones and slews
+between them, and the panoramas everyone has seen are stitched from dozens of
+frames afterwards. **PANORAMA** does the same: step the mast, let the terrain
+settle, capture the frame, step again. A Navcam sweep is ten frames and comes
+out 4600 × 460, covering the full 360° — including, inevitably, the rover's own
+hardware.
+
+Tiles are read out of a render target rather than off the canvas, because
+reading the drawing buffer after a frame has been presented is undefined
+without `preserveDrawingBuffer`, which would cost something on every frame for
+the sake of one that happens rarely.
+
+### Filters
+
+Both Mastcams carry an eight-position filter wheel: a clear one that passes
+Bayer colour, six narrow science bands, and a solar filter dense enough to point
+straight at the sun and see nothing else. Science frames come back as
+single-band greyscale, not colour, which is why the colour products are
+composites. Band centres and wheel layout are real; the response curves over
+rendered RGB are an approximation, and the near-infrared bands extrapolate from
+red because there is no infrared here to sample.
+
+### Targeting and capture
+
+Click anything in a rectilinear mast view and the mast slews to put it in the
+centre, at actuator rate. The terrain is displaced in the vertex shader, so
+three's raycaster — which only ever sees the flat source mesh — would miss it
+entirely; the ray is marched against the same height function the wheels use and
+then bisected. Clicking 260 px right of centre in a 45° Navcam frame commands
+0.277 rad, against a geometric answer of 0.276.
+
+**CAPTURE FRAME** writes the current view to a PNG with a label bar carrying
+instrument, sol, local true solar time, field of view and filter — because a
+frame without that is a screenshot, not an observation.
+
+## The traverse
+
+Press **G**. This is Curiosity's actual route: 1,371 localised positions from
+NASA/JPL's MMGIS, sol 3 to sol 4977, **37.99 km** driven, ending 14.1 km from
+the landing site at bearing 193° and a kilometre up the side of Mount Sharp.
+Nothing is interpolated — every point is somewhere the rover really stopped, and
+consecutive points are never more than 129 m apart.
+
+It is drawn as a ribbon rather than a line, because a GL line is one pixel wide
+on most hardware whatever you ask for, and its heights are recomputed against
+the same band-limited height field and the same curvature the terrain shader
+uses. Without that the far end would float thirty metres above the ground it is
+meant to be lying on.
+
 ### Speed
 
 Curiosity's actual top speed is **4.2 cm/s**. A faithful sim is unplayable — you
@@ -254,13 +453,39 @@ lib/landmarks.ts   landmarks found in the elevation data, not hard-coded
 tools/             terrain pipeline and headless-browser checks
 ```
 
-## Data credit
+---
 
-- **Terrain** — MOLA MEGDR, NASA PDS Geosciences Node. Smith, D. E. et al., Mars
-  Global Surveyor MOLA Mission Experiment Gridded Data Records,
+## Verifying visual work
+
+Rendering bugs do not show up in a diff, so the repo carries tools that drive
+the app in a real browser and measure it — wheel-to-ground clearance, jump
+height and hang time, how a landing settles, how often crests throw the rover
+off the ground, whether the LUT lookup is neutral. Several exist because a bug
+survived review and only a measurement caught it. See
+[CONTRIBUTING.md](CONTRIBUTING.md#verifying-visual-work).
+
+## Contributing
+
+Very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The one rule that matters
+is that anything claimed to be real has to be real, and anything invented has to
+say so.
+
+Accuracy reports are the most valuable thing this project can receive. If a
+number, a position, an optic or a colour is wrong, please
+[open an issue](https://github.com/oddurs/rover/issues/new?template=accuracy.yml).
+
+## Licence and credits
+
+Source code is MIT — see [LICENSE](LICENSE).
+
+The NASA data and 3D models redistributed here are **not** covered by that
+licence and carry their own terms; see [NOTICE](NOTICE) for what they are and
+where they came from. In brief:
+
+- **Terrain** — MOLA MEGDR, NASA PDS Geosciences Node. Smith, D. E. et al.,
   `MGS-M-MOLA-5-MEGDR-L3-V1.0`.
-- **Rover mesh** — NASA/JPL-Caltech, published at
-  science.nasa.gov/resource/curiosity-rover-3d-model.
-- **Traverse waypoints** — NASA/JPL MMGIS (`MSL_waypoints.json`): 1,371 localised
-  positions from sol 3 to sol 4977, 37.99 km driven. Downloaded and analysed;
-  not yet drawn in the scene.
+- **Traverse** — NASA/JPL-Caltech MMGIS, `MSL_waypoints.json`.
+- **Rover meshes** — NASA/JPL-Caltech.
+- **Surface palette** — measured from PIA25175, NASA/JPL-Caltech/MSSS.
+
+This project is not affiliated with, endorsed by, or sponsored by NASA or JPL.

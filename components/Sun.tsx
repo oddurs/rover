@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import * as THREE from "three";
 
-import { sunAt } from "@/lib/mars";
+import { MARS, sunAt } from "@/lib/mars";
 import { mounts } from "@/lib/mounts";
 import { skyAmbient, sunlightColor } from "@/lib/sky";
 import { telemetry, useUi } from "@/lib/store";
@@ -35,8 +35,15 @@ export function Sun() {
     const ui = useUi.getState();
 
     if (!ui.timeFrozen) {
-      // timeRate is sols per real-world minute.
-      telemetry.localTime += ui.timeRate * (24 / 60) * dt;
+      // In simulation the clock runs at the same multiple of real time as the
+      // rover does, so what you are watching is a time-lapse of an actual
+      // drive rather than a rover that has been sped up. Arcade just scrubs
+      // the sky at whatever rate is convenient.
+      const hours =
+        ui.mode === "sim"
+          ? (ui.timeCompression * dt * 24) / MARS.solSeconds
+          : ui.timeRate * (24 / 60) * dt;
+      telemetry.localTime += hours;
       if (telemetry.localTime >= 24) {
         telemetry.localTime -= 24;
         telemetry.sol += 1;

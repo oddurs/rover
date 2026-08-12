@@ -19,7 +19,17 @@ export const mounts = {
  * actuators, so dragging in a camera view aims the head rather than the
  * camera — the mast head mesh moves with the view.
  */
-export const mast = { pan: 0, tilt: 0 };
+export const mast = {
+  pan: 0,
+  tilt: 0,
+  /** Commanded pointing, when the mast is slewing to a target. */
+  targetPan: 0,
+  targetTilt: 0,
+  slewing: false,
+};
+
+/** Mast slew rate, rad/s. Deliberate, like the real actuators. */
+export const MAST_SLEW_RATE = 0.55;
 
 export const MAST_LIMITS = {
   /** The real mast pans a full turn; tilt is limited by the hardware. */

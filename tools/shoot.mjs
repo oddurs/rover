@@ -32,7 +32,8 @@ page.on("requestfailed", (r) =>
   console.log(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`)
 );
 
-await page.goto(`http://localhost:${process.env.PORT ?? 3323}/` + (process.env.QS ?? ""), { waitUntil: "networkidle2", timeout: 120000 });
+const BASE = process.env.URL ?? `http://localhost:${process.env.PORT ?? 3323}/`;
+await page.goto(BASE + (process.env.QS ?? ""), { waitUntil: "networkidle2", timeout: 120000 });
 
 if (probe) {
   const info = await page.evaluate(() => {

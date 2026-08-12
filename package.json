@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm lint && pnpm typecheck && pnpm build",
+    "deploy": "./tools/deploy.sh"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
@@ -30,5 +33,27 @@
     "typescript": "^5"
   },
   "packageManager": "pnpm@10.28.1",
-  "description": "Drive a rocker-bogie rover across Gale Crater, on real MOLA laser altimetry."
+  "description": "Drive a rocker-bogie rover across Gale Crater, on real MOLA laser altimetry",
+  "license": "MIT",
+  "author": "oddurs",
+  "homepage": "https://oddurs.github.io/rover/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oddurs/rover.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oddurs/rover/issues"
+  },
+  "keywords": [
+    "mars",
+    "rover",
+    "curiosity",
+    "perseverance",
+    "three.js",
+    "webgl",
+    "terrain",
+    "mola",
+    "nasa",
+    "simulation"
+  ]
 }

@@ -47,6 +47,12 @@ export interface View {
   fisheye: boolean;
   /** Mask the frame to a circle. */
   circular: boolean;
+  /**
+   * Stereo baseline, metres. Zero for the single-eye instruments.
+   * Navcam and Mastcam figures are the published separations; the Hazcam one
+   * is approximate.
+   */
+  baseline: number;
   /** Where it rides. */
   mount: "external" | "mast" | "body";
   /** Offset from the mount, rover-local metres. */
@@ -69,6 +75,7 @@ export const VIEWS: View[] = [
     mono: false,
     fisheye: false,
     circular: false,
+    baseline: 0,
     mount: "external",
     offset: [0, 0, 0],
     aim: [0, 0],
@@ -83,6 +90,7 @@ export const VIEWS: View[] = [
     mono: false,
     fisheye: false,
     circular: false,
+    baseline: 0,
     mount: "external",
     offset: [0, 0, 0],
     aim: [0, 0],
@@ -97,6 +105,7 @@ export const VIEWS: View[] = [
     mono: true,
     fisheye: false,
     circular: false,
+    baseline: 0.424,
     mount: "mast",
     offset: [-0.06, 0.04, -0.1],
     aim: [0, 0],
@@ -111,6 +120,7 @@ export const VIEWS: View[] = [
     mono: false,
     fisheye: false,
     circular: false,
+    baseline: 0.242,
     mount: "mast",
     offset: [-0.17, 0.0, -0.12],
     aim: [0, 0],
@@ -125,6 +135,7 @@ export const VIEWS: View[] = [
     mono: false,
     fisheye: false,
     circular: false,
+    baseline: 0.242,
     mount: "mast",
     offset: [0.17, 0.0, -0.12],
     aim: [0, 0],
@@ -139,6 +150,7 @@ export const VIEWS: View[] = [
     mono: true,
     fisheye: false,
     circular: true,
+    baseline: 0,
     mount: "mast",
     offset: [0, 0.17, -0.08],
     aim: [0, 0],
@@ -153,6 +165,7 @@ export const VIEWS: View[] = [
     mono: true,
     fisheye: true,
     circular: true,
+    baseline: 0.166,
     mount: "body",
     offset: [-0.3, 0.68 + GROUND, -1.08],
     aim: [-0.42, 0],
@@ -167,6 +180,7 @@ export const VIEWS: View[] = [
     mono: true,
     fisheye: true,
     circular: true,
+    baseline: 0.166,
     mount: "body",
     offset: [0.3, 0.68 + GROUND, 1.02],
     aim: [-0.42, Math.PI],
@@ -181,6 +195,7 @@ export const VIEWS: View[] = [
     mono: false,
     fisheye: false,
     circular: false,
+    baseline: 0,
     mount: "body",
     // Outboard of the belly pan, or it stares at the underside of the hull.
     offset: [-0.82, 0.46 + GROUND, -0.62],

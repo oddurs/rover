@@ -11,6 +11,7 @@ import { Rover } from "@/components/Rover";
 import { Sky } from "@/components/Sky";
 import { Sun } from "@/components/Sun";
 import { Terrain } from "@/components/Terrain";
+import { Traverse } from "@/components/Traverse";
 import { mounts } from "@/lib/mounts";
 import { telemetry } from "@/lib/store";
 import { loadMola, sampleHeight, type MolaMeta } from "@/lib/terrain";
@@ -24,6 +25,7 @@ function World() {
       <Terrain />
       <Rover />
       <Rocks />
+      <Traverse />
       {/* Last, so it reads a rover pose that is already up to date. */}
       <CameraRig />
       {/* Takes over the render loop; must come after everything else. */}

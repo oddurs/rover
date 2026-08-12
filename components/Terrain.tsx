@@ -107,6 +107,16 @@ const vec3 DUST    = vec3(0.200, 0.132, 0.106);
 const vec3 BRIGHT  = vec3(0.360, 0.268, 0.222);
 const vec3 BEDROCK = vec3(0.105, 0.070, 0.055);
 const vec3 BASALT  = vec3(0.048, 0.040, 0.036);
+/** Fine dust settles pale and slightly pink where nothing disturbs it. */
+const vec3 FINES   = vec3(0.395, 0.281, 0.222);
+
+/** Prevailing wind, matching the ripple direction in the height field. */
+const float WIND = 0.62;
+
+vec2 alongWind(vec2 p) {
+  float c = cos(WIND), s = sin(WIND);
+  return vec2(p.x * c - p.y * s, p.x * s + p.y * c);
+}
 `;
 
 /** Replaces <map_fragment>: the surface colour. */
@@ -119,9 +129,33 @@ const FRAG_COLOR = /* glsl */ `
   float grit     = cnoise(vTerrainWorld.xz * 0.9) * 0.5 + 0.5;
 
   vec3 albedo = mix(DUST, BRIGHT, broad);
-  albedo = mix(albedo, BEDROCK, smoothstep(0.10, 0.38, slope));
+
+  // Wind streaks. Sampling a noise that varies slowly along the wind and
+  // quickly across it draws long thin tails, which is what the atmosphere
+  // leaves behind every obstacle on this planet.
+  vec2 w = alongWind(vTerrainWorld.xz);
+  float streak = cnoise(vec2(w.x * 0.0055, w.y * 0.075)) * 0.5 + 0.5;
+  albedo *= 0.82 + 0.36 * streak;
+
+  // Bedrock. Steep ground cannot hold dust, and where the surface is scoured
+  // the underlying rock shows through with its bedding visible.
+  float outcrop = cnoise(vTerrainWorld.xz * 0.028) * 0.5 + 0.5;
+  float exposure = max(
+    smoothstep(0.10, 0.38, slope),
+    smoothstep(0.62, 0.86, outcrop) * smoothstep(0.02, 0.09, slope)
+  );
+  float bedding = cnoise(vec2(w.x * 0.9, w.y * 0.045)) * 0.5 + 0.5;
+  albedo = mix(albedo, BEDROCK * (0.82 + 0.4 * bedding), exposure);
+
+  // Dark basaltic sand pools in the low, flat, sheltered places.
   albedo = mix(albedo, BASALT,
                smoothstep(0.72, 0.94, duneMask) * (1.0 - smoothstep(0.05, 0.2, slope)));
+
+  // Fine dust settles anywhere flat that the wind has left alone, which is
+  // most of Gale most of the time.
+  float shelter = (1.0 - smoothstep(0.015, 0.11, slope)) * (1.0 - streak);
+  albedo = mix(albedo, FINES, shelter * 0.42 * (1.0 - exposure));
+
   albedo *= 0.86 + 0.28 * grit;
   // Clast-scale speckle: individual stones too small to instance still want
   // to show up as tonal variation rather than flat ground.
@@ -154,6 +188,16 @@ const FRAG_NORMAL = /* glsl */ `
     float bx = cnoise((vTerrainWorld.xz + vec2(e, 0.0)) * 26.0);
     float bz = cnoise((vTerrainWorld.xz + vec2(0.0, e)) * 26.0);
     normal = normalize(normal + vec3((b - bx) / e, 0.0, (b - bz) / e) * 0.0022 * gritFade);
+
+    // Centimetre ripples, drawn across the wind rather than isotropically.
+    // The mesh is far too coarse to carry these, but they are the texture the
+    // ground actually has, and they catch a low sun.
+    float c = cos(WIND), sn = sin(WIND);
+    vec2 rp = vec2(vTerrainWorld.x * c - vTerrainWorld.z * sn,
+                   vTerrainWorld.x * sn + vTerrainWorld.z * c);
+    float ripple = sin(rp.x * 5.6 + cnoise(rp * 0.35) * 2.4);
+    vec3 rdir = vec3(c, 0.0, sn);
+    normal = normalize(normal + rdir * ripple * 0.05 * gritFade);
   }
 `;
 

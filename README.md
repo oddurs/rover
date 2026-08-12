@@ -476,7 +476,8 @@ number, a position, an optic or a colour is wrong, please
 
 ## Licence and credits
 
-Source code is MIT — see [LICENSE](LICENSE).
+Source code is MIT — see [LICENSE](LICENSE). The MIT licence covers the source
+only.
 
 The NASA data and 3D models redistributed here are **not** covered by that
 licence and carry their own terms; see [NOTICE](NOTICE) for what they are and

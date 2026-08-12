@@ -53,3 +53,15 @@ Reference imagery used during development
   The terrain's colour palette was measured from PIA25175 (NASA/JPL-Caltech/MSSS),
   a Curiosity Mastcam frame of Gale Crater. That image is not redistributed here;
   only the four albedo constants derived from it appear in the source.
+
+
+Branding
+--------
+  The "Office of Planetary Locomotion" is invented for this project: a fictional
+  agency, its insignia, its division and its mission designation. It is an
+  original mark, drawn in lib/insignia.ts, and it borrows the visual grammar of
+  mid-century agency badges without reproducing any real agency's name, seal,
+  wordmark or insignia.
+
+  This project is an unofficial fan work. It is not affiliated with, endorsed
+  by, or connected to NASA, JPL, Caltech or any government agency.

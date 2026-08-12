@@ -1,3 +1,5 @@
+<img src="docs/images/insignia.png" alt="Office of Planetary Locomotion insignia" width="92" align="left" hspace="18" vspace="4">
+
 # Gale Crater
 
 **A drivable Mars rover sandbox in the browser.** Six-wheel rocker-bogie
@@ -5,6 +7,8 @@ suspension, a real Gale Crater height field from laser altimetry, and Mount
 Sharp on the horizon where it actually is.
 
 No goals, no score. Drive around and look at Mars.
+
+<br clear="left">
 
 ### [→ Open it](https://oddurs.github.io/rover/)
 
@@ -463,6 +467,33 @@ height and hang time, how a landing settles, how often crests throw the rover
 off the ground, whether the LUT lookup is neutral. Several exist because a bug
 survived review and only a measurement caught it. See
 [CONTRIBUTING.md](CONTRIBUTING.md#verifying-visual-work).
+
+## The agency
+
+The interface is dressed as the public face of a space agency that does not
+exist: the **Office of Planetary Locomotion**, Surface Mobility Division, motto
+*four centimetres per second*. It is a small, over-serious bureau whose entire
+remit is driving.
+
+The joke is doing real work. It gives the interface a reason to look like
+mission control, and it gives the copy somewhere to stand — a rover that manages
+4.2 cm/s is funnier when an institution is proud of it.
+
+It is a homage, not a counterfeit. The insignia keeps the grammar of an agency
+badge — blue disc, stars, an orbit, one bold sweep through the middle — and
+changes the noun, because the sweep is a tyre track. No real agency's name,
+seal, wordmark or insignia appears anywhere in it. The badge is authored once as
+SVG in [`lib/insignia.ts`](lib/insignia.ts); the favicon, the app icons and the
+social card are all rasterised from that same file by
+[`tools/render_brand.mjs`](tools/render_brand.mjs), so the mark cannot drift
+between the interface and the metadata.
+
+```bash
+node tools/render_brand.mjs   # after editing lib/insignia.ts or lib/brand.ts
+```
+
+The data and the meshes really are NASA's, and are credited below. The
+letterhead is not.
 
 ## Contributing
 

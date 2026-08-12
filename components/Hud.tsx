@@ -8,6 +8,8 @@ import { VIEWS, getView } from "@/lib/cameras";
 import { BATTERY_JOULES, SIM_TURN_RATE } from "@/lib/drive";
 import { MODE_LABELS, telemetry, useUi } from "@/lib/store";
 import { Imaging } from "@/components/Imaging";
+import { Insignia } from "@/components/Insignia";
+import { BRAND } from "@/lib/brand";
 import { FILTERS, getFilter } from "@/lib/filters";
 import { VEHICLES } from "@/lib/vehicles";
 
@@ -288,16 +290,25 @@ export function Hud({ ready }: { ready: boolean }) {
         <>
           {/* --- Mission identity + clock --- */}
           <Panel className="absolute left-4 top-4 w-[268px]">
-            <div className="flex items-baseline justify-between border-b border-[var(--color-edge)] pb-2">
-              <span className="text-[11px] tracking-[0.18em] text-[var(--color-ink)]">
-                GALE CRATER
-              </span>
-              <span
-                data-tm="sol"
-                className="text-[10px] tracking-[0.16em] text-[var(--color-amber)]"
+            <div className="border-b border-[var(--color-edge)] pb-2">
+              <div className="flex items-center gap-2">
+                <Insignia size={22} />
+                <span className="text-[11px] tracking-[0.18em] text-[var(--color-ink)]">
+                  GALE CRATER
+                </span>
+                <span
+                  data-tm="sol"
+                  className="ml-auto text-[10px] tracking-[0.16em] text-[var(--color-amber)]"
+                >
+                  SOL 0
+                </span>
+              </div>
+              <div
+                className="mt-1.5 text-[9px] tracking-[0.14em] text-[var(--color-ink-faint)]"
+                title={`${BRAND.agency} — ${BRAND.disclaimer}`}
               >
-                SOL 0
-              </span>
+                {BRAND.division.toUpperCase()} · {BRAND.mission}
+              </div>
             </div>
 
             <div className="mt-2.5 flex items-end justify-between">
@@ -740,6 +751,10 @@ export function Hud({ ready }: { ready: boolean }) {
               <p className="mt-2 border-t border-[var(--color-edge)] pt-2 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
                 Terrain from MOLA laser altimetry at {Math.abs(GALE.latitude).toFixed(2)}°S{" "}
                 {GALE.longitude.toFixed(2)}°E. Everything on the horizon is measured.
+              </p>
+              <p className="mt-1.5 text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
+                {BRAND.agency}, motto <i>{BRAND.motto.toLowerCase()}</i>, does not exist.{" "}
+                {BRAND.disclaimer}
               </p>
             </Panel>
           )}
